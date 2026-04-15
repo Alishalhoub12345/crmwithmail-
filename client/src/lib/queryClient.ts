@@ -14,13 +14,38 @@ export function removeToken(): void {
 
 function getAuthHeaders(): Record<string, string> {
   const token = getToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return {
+    Accept: "application/json",
+    "X-Requested-With": "XMLHttpRequest",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
 }
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    let payload: any = null;
+
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = null;
+    }
+
+    const emailErrors = Array.isArray(payload?.errors?.email)
+      ? payload.errors.email.map((value: unknown) => String(value).toLowerCase())
+      : [];
+
+    if (emailErrors.some((message: string) => message.includes("already been taken"))) {
+      throw new Error("A member with this email is already registered, please choose another email address");
+    }
+
+    const validationErrors = payload?.errors && typeof payload.errors === "object"
+      ? Object.values(payload.errors).flat().map((value) => String(value)).join(" ")
+      : "";
+    const message = validationErrors || payload?.message || text;
+
+    throw new Error(message);
   }
 }
 

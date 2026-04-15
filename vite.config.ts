@@ -28,10 +28,16 @@ export default defineConfig({
   },
   root: path.resolve(import.meta.dirname, "client"),
   build: {
-    outDir: path.resolve(import.meta.dirname, "dist/public"),
-    emptyOutDir: true,
+    outDir: path.resolve(import.meta.dirname, "laravel-app/public"),
+    emptyOutDir: false,
   },
   server: {
+    proxy: {
+      "/api": {
+        target: process.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+    },
     fs: {
       strict: true,
       deny: ["**/.*"],

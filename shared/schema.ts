@@ -132,7 +132,7 @@ export type InsertSubscription = z.infer<typeof insertSubscriptionSchema>;
 // === CLASSES ===
 export const classes = mysqlTable("classes", {
   id: id("id"),
-  branchId: int("branch_id").references(() => branches.id).notNull(),
+  branchId: int("branch_id").references(() => branches.id),
   title: varchar("title", { length: 255 }).notNull(),
   description: text("description"),
   coachId: int("coach_id").references(() => coaches.id),
@@ -140,6 +140,8 @@ export const classes = mysqlTable("classes", {
   startTime: varchar("start_time", { length: 32 }).notNull(),
   endTime: varchar("end_time", { length: 32 }).notNull(),
   capacity: int("capacity").notNull(),
+  price: money("price").notNull(),
+  priceType: mysqlEnum("price_type", ["per_class", "monthly"]).default("per_class").notNull(),
   priceExtra: money("price_extra"),
   requiresExtraPayment: boolean("requires_extra_payment").default(false),
   status: mysqlEnum("status", ["scheduled", "canceled", "completed"]).default("scheduled").notNull(),

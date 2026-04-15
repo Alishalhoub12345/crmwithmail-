@@ -3,7 +3,7 @@ import { useAuth } from "@/hooks/use-auth";
 import {
   LayoutDashboard, Users, Building2, Dumbbell, UserCheck,
   Package, CreditCard, ClipboardCheck, TrendingUp, ShoppingBag,
-  Salad, MessageSquare, LogOut, ChevronRight, X
+  Salad, MessageSquare, LogOut, ChevronRight, X, TimerReset, BarChart3
 } from "lucide-react";
 
 interface NavItem {
@@ -21,11 +21,13 @@ const navItems: NavItem[] = [
   { label: "Classes", path: "/classes", icon: Dumbbell, roles: ["owner", "admin", "coach", "member"] },
   { label: "Packages", path: "/packages", icon: Package, roles: ["owner", "admin"] },
   { label: "Payments", path: "/payments", icon: CreditCard, roles: ["owner", "admin"] },
+  { label: "PT Sessions", path: "/pt-sessions", icon: TimerReset, roles: ["owner", "admin", "coach"] },
   { label: "Attendance", path: "/attendance", icon: ClipboardCheck, roles: ["owner", "admin", "coach"] },
   { label: "CRM Leads", path: "/leads", icon: TrendingUp, roles: ["owner", "admin"] },
   { label: "Diet Plans", path: "/diet-plans", icon: Salad, roles: ["owner", "admin", "dietitian"] },
   { label: "Products", path: "/products", icon: ShoppingBag, roles: ["owner", "admin"] },
   { label: "Messages", path: "/messages", icon: MessageSquare, roles: ["owner", "admin"] },
+  { label: "Reports", path: "/reports", icon: BarChart3, roles: ["owner", "admin"] },
   { label: "Users", path: "/users", icon: Users, roles: ["owner", "admin"] },
 ];
 

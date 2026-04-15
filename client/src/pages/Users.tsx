@@ -20,6 +20,7 @@ export default function Users() {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [form, setForm] = useState<any>(emptyForm);
+  const normalizedPassword = (form.password || "").trim();
 
   const { data: users = [], isLoading } = useQuery<any[]>({ queryKey: ["/api/users"] });
   const { data: branches = [] } = useQuery<any[]>({ queryKey: ["/api/branches"] });
@@ -32,7 +33,7 @@ export default function Users() {
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: any) => apiRequest("PUT", `/api/users/${id}`, data).then(r => r.json()),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/users"] }); closeModal(); toast({ title: "User updated" }); },
-    onError: () => toast({ title: "Error", description: "Failed to update", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/users/${id}`),
@@ -47,16 +48,21 @@ export default function Users() {
     setShowModal(true);
   };
   const closeModal = () => { setShowModal(false); setEditing(null); setForm(emptyForm); };
-  const passwordChecks = getPasswordChecks(form.password || "");
-  const shouldValidatePassword = !editing || !!form.password;
+  const passwordChecks = getPasswordChecks(normalizedPassword);
+  const shouldValidatePassword = !!normalizedPassword;
+  const requiresBranch = ["admin", "coach", "member", "dietitian"].includes(form.role);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (shouldValidatePassword && !isStrongPassword(form.password || "")) {
+    if (shouldValidatePassword && !isStrongPassword(normalizedPassword)) {
       toast({ title: "Weak password", description: "Password must include one capital letter, one number, and one special character.", variant: "destructive" });
       return;
     }
-    const data = { ...form, branchId: form.branchId ? parseInt(form.branchId) : null };
+    if (requiresBranch && !form.branchId) {
+      toast({ title: "Branch required", description: `${form.role} users must be assigned to a branch.`, variant: "destructive" });
+      return;
+    }
+    const data = { ...form, password: normalizedPassword, branchId: form.branchId ? parseInt(form.branchId) : null };
     if (!data.password) delete data.password;
     if (editing) updateMutation.mutate({ id: editing.id, data });
     else createMutation.mutate(data);
@@ -126,7 +132,7 @@ export default function Users() {
               <button onClick={closeModal} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
             </div>
             <form onSubmit={handleSubmit} className="p-5 space-y-4">
-              {[["name","Full Name","text"],["email","Email","email"],["phone","Phone","tel"],["password",editing?"New Password (leave blank to keep)":"Password","password"]].map(([k,l,t]) => (
+              {[["name","Full Name","text"],["email","Email","email"],["phone","Phone","tel"],["password",editing?"New Password (leave blank to keep current)":"Password (leave blank for default GymCRM@2024)","password"]].map(([k,l,t]) => (
                 <div key={k}>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">{l}</label>
                   <input type={t} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} required={k !== "phone" && k !== "password" && !editing}

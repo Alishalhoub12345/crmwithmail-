@@ -14,12 +14,14 @@ import Coaches from "@/pages/Coaches";
 import Classes from "@/pages/Classes";
 import Packages from "@/pages/Packages";
 import Payments from "@/pages/Payments";
+import PtSessions from "@/pages/PtSessions";
 import Attendance from "@/pages/Attendance";
 import Leads from "@/pages/Leads";
 import Products from "@/pages/Products";
 import Users from "@/pages/Users";
 import DietPlans from "@/pages/DietPlans";
 import Messages from "@/pages/Messages";
+import Reports from "@/pages/Reports";
 
 function ProtectedRoute({ component: Component, roles }: { component: React.ComponentType; roles?: string[] }) {
   const { user, isLoading } = useAuth();
@@ -45,12 +47,14 @@ function Router() {
       <Route path="/classes"><ProtectedRoute component={Classes} /></Route>
       <Route path="/packages"><ProtectedRoute component={Packages} roles={["owner", "admin"]} /></Route>
       <Route path="/payments"><ProtectedRoute component={Payments} roles={["owner", "admin"]} /></Route>
+      <Route path="/pt-sessions"><ProtectedRoute component={PtSessions} roles={["owner", "admin", "coach"]} /></Route>
       <Route path="/attendance"><ProtectedRoute component={Attendance} /></Route>
       <Route path="/leads"><ProtectedRoute component={Leads} roles={["owner", "admin"]} /></Route>
       <Route path="/products"><ProtectedRoute component={Products} roles={["owner", "admin"]} /></Route>
       <Route path="/users"><ProtectedRoute component={Users} roles={["owner"]} /></Route>
       <Route path="/diet-plans"><ProtectedRoute component={DietPlans} /></Route>
       <Route path="/messages"><ProtectedRoute component={Messages} roles={["owner", "admin"]} /></Route>
+      <Route path="/reports"><ProtectedRoute component={Reports} roles={["owner", "admin"]} /></Route>
       <Route component={NotFound} />
     </Switch>
   );
