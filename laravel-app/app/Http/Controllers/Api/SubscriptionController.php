@@ -40,6 +40,7 @@ class SubscriptionController extends Controller
                 'subscriptions.created_at as createdAt',
                 'packages.name as packageName',
                 'packages.package_type as packageType',
+                'packages.branch_id as packageBranchId',
                 'packages.tier as packageTier',
                 'packages.billing_cycle as billingCycle',
                 'packages.free_months as freeMonths',
@@ -52,6 +53,8 @@ class SubscriptionController extends Controller
                 'packages.freeze_days_allowed as freezeDaysAllowed',
                 'packages.auto_renew as autoRenew',
                 'packages.price as packagePrice',
+                DB::raw("(select GROUP_CONCAT(DISTINCT pba.branch_id order by pba.branch_id separator ',') from package_branch_access pba where pba.package_id = packages.id) as packageBranchIdsRaw"),
+                DB::raw("(select GROUP_CONCAT(DISTINCT branches.name order by branches.name separator ', ') from package_branch_access pba join branches on pba.branch_id = branches.id where pba.package_id = packages.id) as packageBranchNamesRaw"),
                 'users.name as memberName',
             ])
             ->orderByDesc('subscriptions.created_at');
@@ -60,7 +63,22 @@ class SubscriptionController extends Controller
             $query->where('subscriptions.member_id', (int) $memberId);
         }
 
-        return response()->json($query->get());
+        return response()->json(
+            $query->get()->map(function ($subscription) {
+                $branchIds = collect(explode(',', (string) ($subscription->packageBranchIdsRaw ?? '')))
+                    ->filter(fn ($value) => $value !== '')
+                    ->map(fn ($value) => (int) $value)
+                    ->values()
+                    ->all();
+
+                $subscription->packageBranchIds = $branchIds !== [] ? $branchIds : array_values(array_filter([(int) ($subscription->packageBranchId ?? 0)]));
+                $subscription->packageBranchNames = $subscription->packageBranchNamesRaw ?: null;
+
+                unset($subscription->packageBranchIdsRaw, $subscription->packageBranchNamesRaw);
+
+                return $subscription;
+            })
+        );
     }
 
     public function store(Request $request): JsonResponse

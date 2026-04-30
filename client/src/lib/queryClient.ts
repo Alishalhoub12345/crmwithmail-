@@ -45,6 +45,17 @@ async function throwIfResNotOk(res: Response) {
       : "";
     const message = validationErrors || payload?.message || text;
 
+    if (
+      res.status === 401
+      && (
+        message === "Authentication required"
+        || message === "Invalid or expired token"
+      )
+    ) {
+      removeToken();
+      throw new Error("Your session expired. Please sign in again.");
+    }
+
     throw new Error(message);
   }
 }
@@ -55,11 +66,12 @@ export async function apiRequest(
   data?: unknown,
 ): Promise<Response> {
   const headers: Record<string, string> = { ...getAuthHeaders() };
-  if (data) headers["Content-Type"] = "application/json";
+  const isFormData = typeof FormData !== "undefined" && data instanceof FormData;
+  if (data && !isFormData) headers["Content-Type"] = "application/json";
   const res = await fetch(url, {
     method,
     headers,
-    body: data ? JSON.stringify(data) : undefined,
+    body: data ? (isFormData ? data : JSON.stringify(data)) : undefined,
   });
   await throwIfResNotOk(res);
   return res;

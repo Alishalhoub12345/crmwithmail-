@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { EmailLink, PhoneActions } from "@/components/ContactLinks";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getPasswordChecks, isStrongPassword } from "@/lib/password";
@@ -102,7 +103,10 @@ export default function Users() {
                 <tr key={u.id} data-testid={`user-row-${u.id}`} className="hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3.5">
                     <div className="font-medium text-gray-900">{u.name}</div>
-                    <div className="text-xs text-gray-500">{u.email}</div>
+                    <div className="mt-1 flex flex-col gap-1 text-xs text-gray-500">
+                      <EmailLink email={u.email} className="text-gray-500" />
+                      <PhoneActions phone={u.phone} className="text-gray-500" phoneClassName="text-gray-500" />
+                    </div>
                   </td>
                   <td className="px-4 py-3.5">
                     <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium capitalize ${roleColors[u.role] || "bg-gray-100 text-gray-600"}`}>{u.role}</span>

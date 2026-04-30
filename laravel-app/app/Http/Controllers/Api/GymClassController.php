@@ -12,6 +12,9 @@ use Illuminate\Validation\Rule;
 
 class GymClassController extends Controller
 {
+    private const RECURRING_CLASS_HORIZON_MONTHS = 24;
+    private const ACTIVE_STATUSES = ['active', 'inactive'];
+
     public function index(Request $request): JsonResponse
     {
         $actor = $request->user();
@@ -37,17 +40,21 @@ class GymClassController extends Controller
                 'classes.status',
                 'classes.cancellation_reason as cancellationReason',
                 'classes.canceled_at as canceledAt',
-                DB::raw("(select count(*) from class_bookings where class_bookings.class_id = classes.id and class_bookings.status in ('booked','attended')) as bookedCount"),
+                DB::raw("(select count(*) from class_enrollments where class_enrollments.class_id = classes.id) as enrolledCount"),
+                DB::raw("(select count(*) from class_enrollments where class_enrollments.class_id = classes.id and class_enrollments.attended = 1) as attendedCount"),
+                DB::raw("(select count(*) from class_enrollments where class_enrollments.class_id = classes.id and class_enrollments.attended is null) as pendingAttendanceCount"),
+                DB::raw("(select count(*) from class_enrollments where class_enrollments.class_id = classes.id) as bookedCount"),
                 DB::raw("(select count(*) from class_bookings where class_bookings.class_id = classes.id and class_bookings.status = 'waitlisted') as waitlistCount"),
                 'users.name as coachName',
                 DB::raw("COALESCE(branches.name, 'All branches') as branchName"),
             ])
             ->orderByDesc('classes.class_date');
 
-        if ($actor->role !== 'owner') {
-            $query->where(function ($builder) use ($actor) {
+        if ($actor->role !== 'owner' && $actor->role !== 'member') {
+            $visibleBranchIds = $this->visibleBranchIdsForActor($actor);
+            $query->where(function ($builder) use ($visibleBranchIds) {
                 $builder
-                    ->where('classes.branch_id', $actor->branch_id)
+                    ->whereIn('classes.branch_id', $visibleBranchIds)
                     ->orWhereNull('classes.branch_id');
             });
         }
@@ -79,7 +86,10 @@ class GymClassController extends Controller
                 'classes.status',
                 'classes.cancellation_reason as cancellationReason',
                 'classes.canceled_at as canceledAt',
-                DB::raw("(select count(*) from class_bookings where class_bookings.class_id = classes.id and class_bookings.status in ('booked','attended')) as bookedCount"),
+                DB::raw("(select count(*) from class_enrollments where class_enrollments.class_id = classes.id) as enrolledCount"),
+                DB::raw("(select count(*) from class_enrollments where class_enrollments.class_id = classes.id and class_enrollments.attended = 1) as attendedCount"),
+                DB::raw("(select count(*) from class_enrollments where class_enrollments.class_id = classes.id and class_enrollments.attended is null) as pendingAttendanceCount"),
+                DB::raw("(select count(*) from class_enrollments where class_enrollments.class_id = classes.id) as bookedCount"),
                 DB::raw("(select count(*) from class_bookings where class_bookings.class_id = classes.id and class_bookings.status = 'waitlisted') as waitlistCount"),
                 'users.name as coachName',
                 DB::raw("COALESCE(branches.name, 'All branches') as branchName"),
@@ -96,6 +106,10 @@ class GymClassController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        $request->merge([
+            'status' => $this->normalizeStatus($request->input('status')),
+        ]);
+
         $validated = $request->validate([
             'branchId' => ['nullable', 'integer', 'exists:branches,id'],
             'title' => ['required', 'string', 'max:255'],
@@ -116,7 +130,7 @@ class GymClassController extends Controller
             'price' => ['required', 'numeric', 'min:0'],
             'priceType' => ['required', Rule::in(['per_class', 'monthly'])],
             'enableWaitlist' => ['nullable', 'boolean'],
-            'status' => ['nullable', Rule::in(['scheduled', 'canceled', 'completed'])],
+            'status' => ['nullable', Rule::in(self::ACTIVE_STATUSES)],
             'cancellationReason' => ['nullable', 'string'],
         ]);
 
@@ -151,19 +165,21 @@ class GymClassController extends Controller
             'price' => $validated['price'],
             'price_type' => $validated['priceType'],
             'enable_waitlist' => $validated['enableWaitlist'] ?? true,
-            'status' => $validated['status'] ?? 'scheduled',
+            'status' => $validated['status'] ?? 'active',
             'cancellation_reason' => $validated['cancellationReason'] ?? null,
-            'canceled_at' => ($validated['status'] ?? 'scheduled') === 'canceled' ? now() : null,
+            'canceled_at' => ($validated['status'] ?? 'active') === 'inactive' ? now() : null,
         ];
 
         if ($hasRecurrence) {
-            if (empty($validated['recurrenceStartDate']) || empty($validated['recurrenceEndDate']) || empty($validated['weekdays'])) {
-                return response()->json(['message' => 'Start date, end date, and weekdays are required for recurring classes'], 422);
+            if (empty($validated['recurrenceStartDate']) || empty($validated['weekdays'])) {
+                return response()->json(['message' => 'Start date and weekdays are required for recurring classes'], 422);
             }
 
             $dates = [];
             $cursor = Carbon::parse($validated['recurrenceStartDate'])->startOfDay();
-            $end = Carbon::parse($validated['recurrenceEndDate'])->startOfDay();
+            $end = !empty($validated['recurrenceEndDate'])
+                ? Carbon::parse($validated['recurrenceEndDate'])->startOfDay()
+                : Carbon::parse($validated['recurrenceStartDate'])->startOfDay()->addMonths(self::RECURRING_CLASS_HORIZON_MONTHS)->subDay();
             $weekdays = array_map('strtolower', $validated['weekdays']);
 
             if ($hasDaySchedules) {
@@ -235,6 +251,10 @@ class GymClassController extends Controller
             return response()->json(['message' => 'Class not found'], 404);
         }
 
+        $request->merge([
+            'status' => $this->normalizeStatus($request->input('status')),
+        ]);
+
         $validated = $request->validate([
             'branchId' => ['nullable', 'integer', 'exists:branches,id'],
             'title' => ['sometimes', 'required', 'string', 'max:255'],
@@ -247,7 +267,7 @@ class GymClassController extends Controller
             'price' => ['sometimes', 'required', 'numeric', 'min:0'],
             'priceType' => ['sometimes', 'required', Rule::in(['per_class', 'monthly'])],
             'enableWaitlist' => ['nullable', 'boolean'],
-            'status' => ['nullable', Rule::in(['scheduled', 'canceled', 'completed'])],
+            'status' => ['nullable', Rule::in(self::ACTIVE_STATUSES)],
             'cancellationReason' => ['nullable', 'string'],
         ]);
 
@@ -274,7 +294,7 @@ class GymClassController extends Controller
         }
 
         if (array_key_exists('status', $validated)) {
-            $payload['canceled_at'] = $validated['status'] === 'canceled' ? now() : null;
+            $payload['canceled_at'] = $validated['status'] === 'inactive' ? now() : null;
         }
 
         $class->fill($payload)->save();
@@ -289,5 +309,52 @@ class GymClassController extends Controller
         }
         $class->delete();
         return response()->json([], 204);
+    }
+
+    private function normalizeStatus(mixed $value): mixed
+    {
+        if (!is_string($value) || $value === '') {
+            return $value;
+        }
+
+        return match (strtolower(trim($value))) {
+            'scheduled', 'active' => 'active',
+            'canceled', 'cancelled', 'completed', 'inactive' => 'inactive',
+            default => $value,
+        };
+    }
+
+    /**
+     * @return array<int, int>
+     */
+    private function visibleBranchIdsForActor($actor): array
+    {
+        $branchIds = collect([$actor->branch_id])
+            ->filter(fn ($value) => $value !== null)
+            ->map(fn ($value) => (int) $value);
+
+        if ($actor->role === 'coach') {
+            $coach = DB::table('coaches')
+                ->where('user_id', $actor->id)
+                ->select(['id', 'branch_id'])
+                ->first();
+
+            if ($coach) {
+                $branchIds = $branchIds
+                    ->push($coach->branch_id)
+                    ->merge(
+                        DB::table('coach_branch_access')
+                            ->where('coach_id', $coach->id)
+                            ->pluck('branch_id')
+                    );
+            }
+        }
+
+        return $branchIds
+            ->filter(fn ($value) => $value !== null)
+            ->map(fn ($value) => (int) $value)
+            ->unique()
+            ->values()
+            ->all();
     }
 }

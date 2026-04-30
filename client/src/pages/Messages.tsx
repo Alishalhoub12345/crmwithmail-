@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { EmailLink, PhoneActions } from "@/components/ContactLinks";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -37,7 +38,10 @@ export default function Messages() {
               <div className="flex items-start justify-between mb-2">
                 <div>
                   <div className="font-medium text-gray-900">{m.name}</div>
-                  <div className="text-xs text-gray-500">{m.email}{m.phone ? ` · ${m.phone}` : ""}</div>
+                  <div className="mt-1 flex flex-col gap-1 text-xs text-gray-500">
+                    <EmailLink email={m.email} className="text-gray-500" />
+                    <PhoneActions phone={m.phone} className="text-gray-500" phoneClassName="text-gray-500" />
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusColors[m.status]}`}>{m.status}</span>

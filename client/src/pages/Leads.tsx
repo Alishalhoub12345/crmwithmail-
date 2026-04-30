@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import DashboardLayout from "@/components/layout/DashboardLayout";
+import { EmailLink, PhoneActions } from "@/components/ContactLinks";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { TrendingUp, Plus, Edit2, Trash2, Loader2, X, Phone, Mail } from "lucide-react";
+import { TrendingUp, Plus, Edit2, Trash2, Loader2, X } from "lucide-react";
 
 const emptyForm = { branchId: "", name: "", phone: "", email: "", source: "other", status: "new", notes: "" };
 const statusColors: Record<string, string> = {
@@ -95,8 +96,8 @@ export default function Leads() {
               <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusColors[l.status] || "bg-gray-100 text-gray-600"}`}>{l.status}</span>
             </div>
             <div className="space-y-1.5 mb-3">
-              {l.phone && <div className="flex items-center gap-1.5 text-xs text-gray-600"><Phone className="w-3 h-3 text-gray-400" />{l.phone}</div>}
-              {l.email && <div className="flex items-center gap-1.5 text-xs text-gray-600"><Mail className="w-3 h-3 text-gray-400" />{l.email}</div>}
+              {l.phone && <PhoneActions phone={l.phone} className="text-xs text-gray-600" phoneClassName="text-gray-600" />}
+              {l.email && <EmailLink email={l.email} className="text-xs text-gray-600" />}
               {l.notes && <p className="text-xs text-gray-400 line-clamp-2">{l.notes}</p>}
             </div>
             <div className="flex gap-2 pt-3 border-t border-border">

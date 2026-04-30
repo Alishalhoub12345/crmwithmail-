@@ -33,9 +33,17 @@ class BranchController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'location' => ['required', 'string', 'max:255'],
             'phone' => ['nullable', 'string', 'max:50'],
+            'secondaryPhone' => ['nullable', 'string', 'max:50'],
+            'mobile' => ['nullable', 'string', 'max:50'],
             'email' => ['nullable', 'email', 'max:255'],
             'status' => ['nullable', 'in:active,inactive'],
         ]);
+
+        $validated['phone'] = $this->normalizePhoneInput($validated['phone'] ?? null);
+        $validated['secondary_phone'] = $this->normalizePhoneInput($validated['secondaryPhone'] ?? null);
+        $validated['mobile'] = $this->normalizePhoneInput($validated['mobile'] ?? null);
+
+        unset($validated['secondaryPhone']);
 
         $branch = Branch::query()->create($validated);
 
@@ -54,9 +62,24 @@ class BranchController extends Controller
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'location' => ['sometimes', 'required', 'string', 'max:255'],
             'phone' => ['nullable', 'string', 'max:50'],
+            'secondaryPhone' => ['nullable', 'string', 'max:50'],
+            'mobile' => ['nullable', 'string', 'max:50'],
             'email' => ['nullable', 'email', 'max:255'],
             'status' => ['nullable', 'in:active,inactive'],
         ]);
+
+        if (array_key_exists('phone', $validated)) {
+            $validated['phone'] = $this->normalizePhoneInput($validated['phone']);
+        }
+
+        if (array_key_exists('secondaryPhone', $validated)) {
+            $validated['secondary_phone'] = $this->normalizePhoneInput($validated['secondaryPhone']);
+            unset($validated['secondaryPhone']);
+        }
+
+        if (array_key_exists('mobile', $validated)) {
+            $validated['mobile'] = $this->normalizePhoneInput($validated['mobile']);
+        }
 
         $branch->fill($validated)->save();
 
@@ -74,5 +97,16 @@ class BranchController extends Controller
         $branch->delete();
 
         return response()->json([], 204);
+    }
+
+    private function normalizePhoneInput(?string $value): ?string
+    {
+        $normalized = trim((string) $value);
+
+        if ($normalized === '' || $normalized === '+961') {
+            return null;
+        }
+
+        return $normalized;
     }
 }

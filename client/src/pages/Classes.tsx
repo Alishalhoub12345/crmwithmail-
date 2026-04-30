@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { EmailLink } from "@/components/ContactLinks";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -30,7 +31,6 @@ const emptyForm = {
   coachId: "",
   classDate: "",
   recurrenceStartDate: "",
-  recurrenceEndDate: "",
   weekdays: [] as string[],
   startTime: "",
   endTime: "",
@@ -39,24 +39,9 @@ const emptyForm = {
   capacity: "20",
   enableWaitlist: true,
   priceType: "monthly",
-  price: "",
-  status: "scheduled",
+  price: "0",
+  status: "active",
   cancellationReason: "",
-};
-
-const getMonthlyCycleEndDate = (value: string) => {
-  if (!value) {
-    return "";
-  }
-
-  const date = new Date(`${value}T00:00:00`);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
-
-  date.setMonth(date.getMonth() + 1);
-  date.setDate(date.getDate() - 1);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 };
 
 const formatDateForDisplay = (value: string) => {
@@ -122,6 +107,7 @@ export default function Classes() {
   const { toast } = useToast();
   const { user } = useAuth();
   const [search, setSearch] = useState("");
+  const [branchFilter, setBranchFilter] = useState<string>("all");
   const [viewMode, setViewMode] = useState<"table" | "calendar">("table");
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
@@ -130,10 +116,37 @@ export default function Classes() {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [form, setForm] = useState<any>(emptyForm);
+  const [classToDelete, setClassToDelete] = useState<any>(null);
+  const [selectedClassForEnrollments, setSelectedClassForEnrollments] = useState<any>(null);
+  const [selectedBlockedMemberId, setSelectedBlockedMemberId] = useState("");
+  const [attendanceDraft, setAttendanceDraft] = useState<Record<number, boolean>>({});
 
   const { data: classes = [], isLoading } = useQuery<any[]>({ queryKey: ["/api/classes"] });
   const { data: branches = [] } = useQuery<any[]>({ queryKey: ["/api/branches"] });
   const { data: coaches = [] } = useQuery<any[]>({ queryKey: ["/api/coaches"] });
+  const { data: members = [] } = useQuery<any[]>({
+    queryKey: ["/api/members"],
+    enabled: user?.role === "member",
+  });
+
+  const currentMember = user?.role === "member"
+    ? (members as any[]).find((member: any) => Number(member.userId) === Number(user.id))
+    : null;
+
+  const { data: memberEnrollments = [] } = useQuery<any[]>({
+    queryKey: currentMember?.id ? [`/api/class-enrollments/member/${currentMember.id}`] : ["/api/class-enrollments/member"],
+    enabled: user?.role === "member" && Boolean(currentMember?.id),
+  });
+
+  const { data: blockedMembers = [] } = useQuery<any[]>({
+    queryKey: ["/api/class-enrollment-blocks"],
+    enabled: user?.role === "owner" || user?.role === "admin",
+  });
+
+  const { data: classEnrollments = [] } = useQuery<any[]>({
+    queryKey: selectedClassForEnrollments?.id ? [`/api/class-enrollments/${selectedClassForEnrollments.id}`] : ["/api/class-enrollments"],
+    enabled: Boolean(selectedClassForEnrollments?.id) && (user?.role === "owner" || user?.role === "admin" || user?.role === "coach"),
+  });
 
   const createMutation = useMutation({
     mutationFn: (data: any) => apiRequest("POST", "/api/classes", data).then(r => r.json()),
@@ -151,11 +164,69 @@ export default function Classes() {
   });
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/classes/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/classes"] }); toast({ title: "Class deleted" }); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/classes"] });
+      setClassToDelete(null);
+      toast({ title: "Class deleted" });
+    },
     onError: () => toast({ title: "Error", description: "Failed to delete", variant: "destructive" }),
   });
 
+  const enrollMutation = useMutation({
+    mutationFn: (classId: number) =>
+      apiRequest("POST", "/api/class-enrollments/enroll", {
+        memberId: currentMember?.id,
+        classId,
+      }).then((r) => r.json()),
+    onSuccess: () => {
+      if (currentMember?.id) {
+        queryClient.invalidateQueries({ queryKey: [`/api/class-enrollments/member/${currentMember.id}`] });
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/classes"] });
+      toast({ title: "Enrollment submitted" });
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message || "Could not enroll in class", variant: "destructive" }),
+  });
+
+  const saveAttendanceMutation = useMutation({
+    mutationFn: async () => {
+      await Promise.all(
+        (classEnrollments as any[]).map((enrollment: any) =>
+          apiRequest("POST", "/api/class-enrollments/mark-attendance", {
+            enrollmentId: enrollment.id,
+            attended: attendanceDraft[Number(enrollment.id)] ?? true,
+          }).then((r) => r.json()),
+        ),
+      );
+    },
+    onSuccess: () => {
+      if (selectedClassForEnrollments?.id) {
+        queryClient.invalidateQueries({ queryKey: [`/api/class-enrollments/${selectedClassForEnrollments.id}`] });
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/classes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/class-enrollment-blocks"] });
+      toast({ title: "Attendance updated" });
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message || "Failed to mark attendance", variant: "destructive" }),
+  });
+
+  const unblockMutation = useMutation({
+    mutationFn: (memberId: number) => apiRequest("POST", "/api/class-enrollment-blocks/unblock", { memberId }).then((r) => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/class-enrollment-blocks"] });
+      setSelectedBlockedMemberId("");
+      toast({ title: "Member unblocked" });
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message || "Failed to unblock member", variant: "destructive" }),
+  });
+
   const canManage = user?.role === "owner" || user?.role === "admin";
+  const currentCoach = user?.role === "coach"
+    ? (coaches as any[]).find((coach: any) => Number(coach.userId) === Number(user.id))
+    : null;
+  const canReviewEnrollments = user?.role === "owner" || user?.role === "admin" || user?.role === "coach";
+  const canMarkClassAttendance = user?.role === "owner" || user?.role === "coach";
+  const hasActionColumn = canManage || canReviewEnrollments || user?.role === "member";
   const openCreate = () => { setEditing(null); setForm({ ...emptyForm, branchId: user?.branchId?.toString() || "" }); setShowModal(true); };
   const openEdit = (c: any) => {
     setEditing(c);
@@ -168,7 +239,6 @@ export default function Classes() {
       coachId: c.coachId || "",
       classDate,
       recurrenceStartDate: classDate,
-      recurrenceEndDate: classDate,
       weekdays: weekday ? [weekday] : [],
       startTime: c.startTime || "",
       endTime: c.endTime || "",
@@ -180,17 +250,32 @@ export default function Classes() {
       capacity: c.capacity || "20",
       enableWaitlist: c.enableWaitlist ?? true,
       priceType: "monthly",
-      price: c.price || "",
-      status: c.status || "scheduled",
+      price: c.price || "0",
+      status: c.status || "active",
       cancellationReason: c.cancellationReason || "",
     });
     setShowModal(true);
   };
   const closeModal = () => { setShowModal(false); setEditing(null); setForm(emptyForm); };
+  const memberEnrollmentByClassId = Object.fromEntries((memberEnrollments as any[]).map((enrollment: any) => [Number(enrollment.classId), enrollment]));
+
+  useEffect(() => {
+    if (!selectedClassForEnrollments) {
+      setAttendanceDraft({});
+      return;
+    }
+
+    setAttendanceDraft(Object.fromEntries(
+      (classEnrollments as any[]).map((enrollment: any) => [
+        Number(enrollment.id),
+        enrollment.attended === false ? false : true,
+      ]),
+    ));
+  }, [classEnrollments, selectedClassForEnrollments]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const isRecurringCreate = !editing && form.weekdays.length > 0 && form.recurrenceStartDate && form.recurrenceEndDate;
+    const isRecurringCreate = !editing && form.weekdays.length > 0 && form.recurrenceStartDate;
 
     const daySchedules = isRecurringCreate
       ? form.weekdays.map((weekday: string) => ({
@@ -209,7 +294,7 @@ export default function Classes() {
       branchId: form.branchId === "all" ? null : form.branchId ? parseInt(form.branchId, 10) : null,
       coachId: form.coachId ? parseInt(form.coachId) : null,
       capacity: parseInt(form.capacity),
-      price: parseFloat(form.price),
+      price: parseFloat(form.price || "0"),
       priceType: "monthly",
       daySchedules,
       startTime: isRecurringCreate ? undefined : form.startTime,
@@ -219,13 +304,42 @@ export default function Classes() {
     else createMutation.mutate(data);
   };
 
-  const filtered = (classes as any[]).filter((c: any) =>
-    c.title.toLowerCase().includes(search.toLowerCase()) ||
-    (c.coachName || "").toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = (classes as any[])
+    .filter((c: any) => user?.role !== "coach" || Number(c.coachId) === Number(currentCoach?.id))
+    .filter((c: any) => {
+      const matchesSearch =
+        c.title.toLowerCase().includes(search.toLowerCase()) ||
+        (c.coachName || "").toLowerCase().includes(search.toLowerCase());
+
+      const matchesBranch =
+        branchFilter === "all"
+          ? true
+          : branchFilter === "unassigned"
+            ? c.branchId == null
+            : String(c.branchId ?? "") === branchFilter;
+
+      return matchesSearch && matchesBranch;
+    })
+    .sort((left: any, right: any) => {
+      const leftDateTime = new Date(`${left.classDate || "9999-12-31"}T${left.startTime || "23:59"}`);
+      const rightDateTime = new Date(`${right.classDate || "9999-12-31"}T${right.startTime || "23:59"}`);
+      const now = new Date();
+
+      const leftIsUpcoming = leftDateTime >= now;
+      const rightIsUpcoming = rightDateTime >= now;
+
+      if (leftIsUpcoming !== rightIsUpcoming) {
+        return leftIsUpcoming ? -1 : 1;
+      }
+
+      if (leftIsUpcoming && rightIsUpcoming) {
+        return leftDateTime.getTime() - rightDateTime.getTime();
+      }
+
+      return rightDateTime.getTime() - leftDateTime.getTime();
+    });
   const isPending = createMutation.isPending || updateMutation.isPending;
   const showRecurringScheduleBuilder = !editing && form.weekdays.length > 0;
-  const autoMonthlyEndDate = getMonthlyCycleEndDate(form.recurrenceStartDate);
   const classesByDate = filtered.reduce<Record<string, any[]>>((carry, gymClass: any) => {
     const key = String(gymClass.classDate || "");
     if (!key) {
@@ -252,21 +366,7 @@ export default function Classes() {
     };
   });
 
-  const statusColor = (s: string) => s === "scheduled" ? "bg-green-100 text-green-700" : s === "canceled" ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-600";
-
-  useEffect(() => {
-    if (editing) {
-      return;
-    }
-
-    const nextEndDate = getMonthlyCycleEndDate(form.recurrenceStartDate);
-    if (nextEndDate && nextEndDate !== form.recurrenceEndDate) {
-      setForm((current: any) => ({
-        ...current,
-        recurrenceEndDate: nextEndDate,
-      }));
-    }
-  }, [editing, form.recurrenceEndDate, form.recurrenceStartDate]);
+  const statusColor = (s: string) => s === "active" ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600";
 
   return (
     <DashboardLayout>
@@ -293,11 +393,74 @@ export default function Classes() {
       </div>
 
       <div className="bg-white rounded-xl border border-border shadow-sm">
+        {(user?.role === "owner" || user?.role === "admin") && (
+          <div className="border-b border-border bg-gray-50/70 p-4">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-end">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-900">Blocked From Class Reservation</h2>
+                <p className="mt-1 text-xs text-gray-500">
+                  After one no-show the member is warned. On the second no-show they are blocked until the front desk removes it.
+                </p>
+              </div>
+              {canManage && (
+                <div className="flex gap-2">
+                  <select
+                    value={selectedBlockedMemberId}
+                    onChange={(e) => setSelectedBlockedMemberId(e.target.value)}
+                    className="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  >
+                    <option value="">Select blocked member</option>
+                    {(blockedMembers as any[]).map((blocked: any) => (
+                      <option key={blocked.blockId} value={blocked.memberId}>
+                        {blocked.memberName}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!selectedBlockedMemberId || unblockMutation.isPending}
+                    onClick={() => unblockMutation.mutate(parseInt(selectedBlockedMemberId, 10))}
+                    className="rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+                  >
+                    Unblock
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(blockedMembers as any[]).length === 0 ? (
+                <span className="text-xs text-gray-500">No blocked members.</span>
+              ) : (
+                (blockedMembers as any[]).map((blocked: any) => (
+                  <span key={blocked.blockId} className="inline-flex rounded-full bg-red-50 px-3 py-1 text-xs text-red-700">
+                    {blocked.memberName}
+                  </span>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="p-4 border-b border-border">
-          <div className="relative max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search classes..."
-              className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm w-full focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_240px]">
+            <div className="relative max-w-sm md:max-w-none">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search classes..."
+                className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm w-full focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+            <select
+              value={branchFilter}
+              onChange={(e) => setBranchFilter(e.target.value)}
+              className="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+            >
+              <option value="all">All branches</option>
+              {(branches as any[]).map((branch: any) => (
+                <option key={branch.id} value={String(branch.id)}>
+                  {branch.name}
+                </option>
+              ))}
+              <option value="unassigned">All branches / Unassigned</option>
+            </select>
           </div>
         </div>
         {isLoading ? (
@@ -342,7 +505,7 @@ export default function Classes() {
                         <button
                           key={gymClass.id}
                           type="button"
-                          onClick={() => openEdit(gymClass)}
+                          onClick={() => (canManage ? openEdit(gymClass) : canReviewEnrollments ? setSelectedClassForEnrollments(gymClass) : undefined)}
                           className="w-full rounded-md border border-primary/15 bg-primary/5 px-2 py-1.5 text-left text-xs text-gray-700 transition-colors hover:border-primary/30 hover:bg-primary/10"
                         >
                           <div className="font-medium text-gray-900">{gymClass.title}</div>
@@ -360,14 +523,14 @@ export default function Classes() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-gray-50">
-                  {["Class", "Coach", "Date & Time", "Branch", "Capacity", "Status", ...(canManage ? ["Actions"] : [])].map(h => (
+                  {["Class", "Personal Trainer", "Date & Time", "Branch", "Capacity", "Status", ...(hasActionColumn ? [canMarkClassAttendance ? "Attendance" : "Members"] : [])].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {filtered.length === 0 ? (
-                  <tr><td colSpan={7} className="px-4 py-10 text-center text-gray-400">No classes found</td></tr>
+                  <tr><td colSpan={hasActionColumn ? 7 : 6} className="px-4 py-10 text-center text-gray-400">No classes found</td></tr>
                 ) : filtered.map((c: any) => (
                   <tr key={c.id} data-testid={`class-row-${c.id}`} className="hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-3.5">
@@ -376,22 +539,75 @@ export default function Classes() {
                     </td>
                     <td className="px-4 py-3.5 text-gray-600">{c.coachName || "—"}</td>
                     <td className="px-4 py-3.5 text-gray-600">
-                      <div>{c.classDate}</div>
-                      <div className="text-xs text-gray-400">{c.startTime} – {c.endTime}</div>
+                      <div>{formatDateForDisplay(c.classDate)}</div>
+                      <div className="text-xs text-gray-400">{c.startTime} - {c.endTime}</div>
                     </td>
                     <td className="px-4 py-3.5 text-gray-600">{c.branchName}</td>
                     <td className="px-4 py-3.5 text-gray-600">
-                      <div className="flex items-center gap-1"><Users className="w-3.5 h-3.5 text-gray-400" /> {c.bookedCount ?? 0}/{c.capacity}</div>
+                      <div className="flex items-center gap-1"><Users className="w-3.5 h-3.5 text-gray-400" /> {c.enrolledCount ?? c.bookedCount ?? 0}/{c.capacity}</div>
+                      {(user?.role === "owner" || user?.role === "admin" || user?.role === "coach") && (
+                        <div className="text-xs text-gray-400">Attended: {c.attendedCount ?? 0}</div>
+                      )}
+                      {(user?.role === "owner" || user?.role === "admin" || user?.role === "coach") && (
+                        <div className="text-xs text-gray-400">Pending: {c.pendingAttendanceCount ?? 0}</div>
+                      )}
                       <div className="text-xs text-gray-400">Waitlist: {c.waitlistCount ?? 0}</div>
                     </td>
                     <td className="px-4 py-3.5">
                       <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(c.status)}`}>{c.status}</span>
                     </td>
-                    {canManage && (
+                    {hasActionColumn && (
                       <td className="px-4 py-3.5">
                         <div className="flex items-center gap-2">
-                          <button onClick={() => openEdit(c)} data-testid={`button-edit-class-${c.id}`} className="p-1.5 text-gray-400 hover:text-primary hover:bg-primary/10 rounded"><Edit2 className="w-4 h-4" /></button>
-                          <button onClick={() => deleteMutation.mutate(c.id)} data-testid={`button-delete-class-${c.id}`} className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded"><Trash2 className="w-4 h-4" /></button>
+                          {user?.role === "member" && (() => {
+                            const enrollment = memberEnrollmentByClassId[Number(c.id)];
+                            if (enrollment) {
+                              return (
+                                <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
+                                  enrollment.attended === true
+                                    ? "bg-green-100 text-green-700"
+                                    : enrollment.attended === false
+                                      ? "bg-red-100 text-red-700"
+                                      : "bg-blue-100 text-blue-700"
+                                }`}>
+                                  {enrollment.attended === true ? "Attended" : enrollment.attended === false ? "No-show" : "Enrolled"}
+                                </span>
+                              );
+                            }
+
+                            return (
+                              <button
+                                type="button"
+                                disabled={
+                                  !currentMember?.id
+                                  || enrollMutation.isPending
+                                  || c.status !== "active"
+                                  || Number(c.enrolledCount ?? c.bookedCount ?? 0) >= Number(c.capacity ?? 0)
+                                }
+                                onClick={() => enrollMutation.mutate(Number(c.id))}
+                                className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                              >
+                                {Number(c.enrolledCount ?? c.bookedCount ?? 0) >= Number(c.capacity ?? 0) ? "Full" : "Enroll"}
+                              </button>
+                            );
+                          })()}
+
+                          {canReviewEnrollments && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedClassForEnrollments(c)}
+                              className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-700 transition-colors hover:bg-gray-50"
+                            >
+                              {canMarkClassAttendance ? "Attendance" : "View Members"}
+                            </button>
+                          )}
+
+                          {canManage && (
+                            <button onClick={() => openEdit(c)} data-testid={`button-edit-class-${c.id}`} className="p-1.5 text-gray-400 hover:text-primary hover:bg-primary/10 rounded"><Edit2 className="w-4 h-4" /></button>
+                          )}
+                          {canManage && (
+                            <button onClick={() => setClassToDelete(c)} data-testid={`button-delete-class-${c.id}`} className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded"><Trash2 className="w-4 h-4" /></button>
+                          )}
                         </div>
                       </td>
                     )}
@@ -421,30 +637,16 @@ export default function Classes() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Coach</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Personal Trainer</label>
                 <select value={form.coachId} onChange={(e) => setForm({ ...form, coachId: e.target.value })}
                   className="w-full px-3.5 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
-                  <option value="">No coach</option>
+                  <option value="">No personal trainer</option>
                   {(coaches as any[]).map((c: any) => <option key={c.id} value={c.id}>{c.userName}</option>)}
                 </select>
               </div>
               <div className="col-span-2">
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Class Title</label>
                 <input type="text" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required placeholder="e.g. Morning Yoga"
-                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Billing Type</label>
-                <input
-                  type="text"
-                  value="Monthly only"
-                  readOnly
-                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-lg bg-gray-100 text-sm text-gray-600 focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Monthly Price</label>
-                <input type="number" step="0.01" min="0" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} required
                   className="w-full px-3.5 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
               </div>
               <div className="col-span-2">
@@ -507,7 +709,7 @@ export default function Classes() {
                 </>
               ) : (
                 <>
-                  <div>
+                  <div className="col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">Start Date</label>
                     <div className="flex gap-2">
                       <input
@@ -546,20 +748,7 @@ export default function Classes() {
                         </PopoverContent>
                       </Popover>
                     </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">End Date</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        placeholder="dd/mm/yyyy"
-                        value={formatDateForDisplay(autoMonthlyEndDate)}
-                        readOnly
-                        className="w-full px-3.5 py-2.5 border border-gray-200 rounded-lg bg-gray-100 text-sm text-gray-600 focus:outline-none"
-                      />
-                    </div>
-                    <p className="mt-1 text-xs text-gray-500">Auto-calculated as one monthly class cycle from the selected start date.</p>
+                    <p className="mt-1 text-xs text-gray-500">The class will start repeating from this date.</p>
                   </div>
                   <div className="col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-2">Repeat On</label>
@@ -583,7 +772,7 @@ export default function Classes() {
                         );
                       })}
                     </div>
-                    <p className="mt-2 text-xs text-gray-500">The class will repeat every selected weekday between these two dates.</p>
+                    <p className="mt-2 text-xs text-gray-500">The class will repeat every selected weekday starting from this date.</p>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">Capacity</label>
@@ -594,9 +783,8 @@ export default function Classes() {
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">Status</label>
                     <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}
                       className="w-full px-3.5 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
-                      <option value="scheduled">Scheduled</option>
-                      <option value="canceled">Canceled</option>
-                      <option value="completed">Completed</option>
+                      <option value="active">Active</option>
+                      <option value="inactive">Inactive</option>
                     </select>
                   </div>
                 </>
@@ -756,15 +944,14 @@ export default function Classes() {
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">Status</label>
                   <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}
                     className="w-full px-3.5 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
-                    <option value="scheduled">Scheduled</option>
-                    <option value="canceled">Canceled</option>
-                    <option value="completed">Completed</option>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
                   </select>
                 </div>
               )}
-              {form.status === "canceled" && (
+              {form.status === "inactive" && (
                 <div className="col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Cancellation Reason</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Inactive Reason</label>
                   <textarea value={form.cancellationReason} onChange={(e) => setForm({ ...form, cancellationReason: e.target.value })} rows={2}
                     className="w-full px-3.5 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none" />
                 </div>
@@ -777,6 +964,133 @@ export default function Classes() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {selectedClassForEnrollments && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white shadow-xl">
+            <div className="sticky top-0 flex items-center justify-between border-b border-border bg-white p-5">
+              <div>
+                <h2 className="font-semibold text-gray-900">{canMarkClassAttendance ? "Class Attendance" : "Class Enrollments"}</h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  {selectedClassForEnrollments.title} • {selectedClassForEnrollments.classDate} • {selectedClassForEnrollments.startTime}
+                </p>
+              </div>
+              <button onClick={() => setSelectedClassForEnrollments(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-5">
+              {(classEnrollments as any[]).length === 0 ? (
+                <div className="rounded-lg border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-500">
+                  No one enrolled in this class yet.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {(classEnrollments as any[]).map((enrollment: any) => (
+                    <div key={enrollment.id} className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <div className="font-medium text-gray-900">{enrollment.memberName}</div>
+                        <div className="text-xs text-gray-500">
+                          <EmailLink email={enrollment.memberEmail} className="text-gray-500" />
+                        </div>
+                        <div className="mt-1 text-xs text-gray-500">
+                          Status: {enrollment.attended === true ? "Attended" : enrollment.attended === false ? "No-show" : "Pending personal trainer confirmation"}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
+                          enrollment.attended === true
+                            ? "bg-green-100 text-green-700"
+                            : enrollment.attended === false
+                              ? "bg-red-100 text-red-700"
+                              : "bg-blue-100 text-blue-700"
+                        }`}>
+                          {enrollment.attended === true ? "Attended" : enrollment.attended === false ? "No-show" : "Pending"}
+                        </span>
+
+                        {canMarkClassAttendance && (
+                          <button
+                            type="button"
+                            disabled={saveAttendanceMutation.isPending}
+                            onClick={() =>
+                              setAttendanceDraft((current) => ({
+                                ...current,
+                                [Number(enrollment.id)]: !(current[Number(enrollment.id)] ?? true),
+                              }))
+                            }
+                            className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                              (attendanceDraft[Number(enrollment.id)] ?? true)
+                                ? "border-green-200 bg-green-50 text-green-700 hover:bg-green-100"
+                                : "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                            }`}
+                          >
+                            {(attendanceDraft[Number(enrollment.id)] ?? true) ? "Attended" : "No-show"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {canMarkClassAttendance && (classEnrollments as any[]).length > 0 && (
+                <div className="mt-5 flex justify-end">
+                  <button
+                    type="button"
+                    disabled={saveAttendanceMutation.isPending}
+                    onClick={() => saveAttendanceMutation.mutate()}
+                    className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {saveAttendanceMutation.isPending ? "Saving..." : "Save Attendance"}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {classToDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-border p-5">
+              <h2 className="font-semibold text-gray-900">Delete Class</h2>
+              <button onClick={() => setClassToDelete(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5">
+              <p className="text-sm text-gray-600">
+                Are you sure you want to delete <span className="font-semibold text-gray-900">{classToDelete.title}</span>?
+              </p>
+              <p className="mt-2 text-xs text-gray-500">
+                Date: {classToDelete.classDate || "-"} {classToDelete.startTime ? `at ${classToDelete.startTime}` : ""}
+              </p>
+              <p className="mt-1 text-xs text-gray-500">Branch: {classToDelete.branchName || "-"}</p>
+              <p className="mt-2 text-xs text-gray-400">This action cannot be undone.</p>
+              <div className="mt-5 flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setClassToDelete(null)}
+                  className="flex-1 rounded-lg border border-gray-200 px-4 py-2.5 text-sm text-gray-700 transition-colors hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deleteMutation.mutate(classToDelete.id)}
+                  disabled={deleteMutation.isPending}
+                  className="flex-1 rounded-lg bg-red-500 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-600 disabled:opacity-50"
+                >
+                  {deleteMutation.isPending ? "Deleting..." : "Delete Class"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -3,10 +3,11 @@ import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { useAuth } from "@/hooks/use-auth";
+import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import NotFound from "@/pages/not-found";
 
 import Login from "@/pages/Login";
+import PasswordSetup from "@/pages/PasswordSetup";
 import Dashboard from "@/pages/Dashboard";
 import Branches from "@/pages/Branches";
 import Members from "@/pages/Members";
@@ -15,6 +16,7 @@ import Classes from "@/pages/Classes";
 import Packages from "@/pages/Packages";
 import Payments from "@/pages/Payments";
 import PtSessions from "@/pages/PtSessions";
+import MemberPtSessions from "@/pages/MemberPtSessions";
 import Attendance from "@/pages/Attendance";
 import Leads from "@/pages/Leads";
 import Products from "@/pages/Products";
@@ -39,6 +41,8 @@ function Router() {
   return (
     <Switch>
       <Route path="/login" component={Login} />
+      <Route path="/account-access" component={PasswordSetup} />
+      <Route path="/password-setup" component={PasswordSetup} />
       <Route path="/">{user ? <Redirect to="/dashboard" /> : <Redirect to="/login" />}</Route>
       <Route path="/dashboard"><ProtectedRoute component={Dashboard} /></Route>
       <Route path="/branches"><ProtectedRoute component={Branches} roles={["owner"]} /></Route>
@@ -48,7 +52,8 @@ function Router() {
       <Route path="/packages"><ProtectedRoute component={Packages} roles={["owner", "admin"]} /></Route>
       <Route path="/payments"><ProtectedRoute component={Payments} roles={["owner", "admin"]} /></Route>
       <Route path="/pt-sessions"><ProtectedRoute component={PtSessions} roles={["owner", "admin", "coach"]} /></Route>
-      <Route path="/attendance"><ProtectedRoute component={Attendance} /></Route>
+      <Route path="/my-pt-sessions"><ProtectedRoute component={MemberPtSessions} roles={["member"]} /></Route>
+      <Route path="/attendance"><ProtectedRoute component={Attendance} roles={["owner", "admin"]} /></Route>
       <Route path="/leads"><ProtectedRoute component={Leads} roles={["owner", "admin"]} /></Route>
       <Route path="/products"><ProtectedRoute component={Products} roles={["owner", "admin"]} /></Route>
       <Route path="/users"><ProtectedRoute component={Users} roles={["owner"]} /></Route>
@@ -63,10 +68,12 @@ function Router() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Router />
-        <Toaster />
-      </TooltipProvider>
+      <AuthProvider>
+        <TooltipProvider>
+          <Router />
+          <Toaster />
+        </TooltipProvider>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

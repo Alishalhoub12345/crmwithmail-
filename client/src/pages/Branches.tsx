@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import DashboardLayout from "@/components/layout/DashboardLayout";
+import { EmailLink, PhoneActions } from "@/components/ContactLinks";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Building2, Plus, Edit2, Trash2, Loader2, X } from "lucide-react";
@@ -10,17 +11,30 @@ interface Branch {
   name: string;
   location: string;
   phone: string;
+  secondaryPhone?: string;
+  secondary_phone?: string;
+  mobile?: string;
   email: string;
   status: string;
 }
 
-const emptyForm = { name: "", location: "", phone: "", email: "", status: "active" };
+const defaultLebanonPhone = "+961";
+const emptyForm = {
+  name: "",
+  location: "",
+  phone: defaultLebanonPhone,
+  secondaryPhone: defaultLebanonPhone,
+  mobile: defaultLebanonPhone,
+  email: "",
+  status: "active",
+};
 
 export default function Branches() {
   const { toast } = useToast();
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<Branch | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [branchToDelete, setBranchToDelete] = useState<Branch | null>(null);
 
   const { data: branches = [], isLoading } = useQuery<Branch[]>({ queryKey: ["/api/branches"] });
 
@@ -38,12 +52,28 @@ export default function Branches() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/branches/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/branches"] }); toast({ title: "Branch deleted" }); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/branches"] });
+      setBranchToDelete(null);
+      toast({ title: "Branch deleted" });
+    },
     onError: () => toast({ title: "Error", description: "Failed to delete branch", variant: "destructive" }),
   });
 
   const openCreate = () => { setEditing(null); setForm(emptyForm); setShowModal(true); };
-  const openEdit = (b: Branch) => { setEditing(b); setForm({ name: b.name, location: b.location, phone: b.phone || "", email: b.email || "", status: b.status }); setShowModal(true); };
+  const openEdit = (b: Branch) => {
+    setEditing(b);
+    setForm({
+      name: b.name,
+      location: b.location,
+      phone: b.phone || defaultLebanonPhone,
+      secondaryPhone: b.secondaryPhone || b.secondary_phone || defaultLebanonPhone,
+      mobile: b.mobile || defaultLebanonPhone,
+      email: b.email || "",
+      status: b.status,
+    });
+    setShowModal(true);
+  };
   const closeModal = () => { setShowModal(false); setEditing(null); setForm(emptyForm); };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -85,14 +115,23 @@ export default function Branches() {
               </div>
               <h3 className="font-semibold text-gray-900 mb-1">{b.name}</h3>
               <p className="text-sm text-gray-500 mb-1">{b.location}</p>
-              {b.phone && <p className="text-xs text-gray-400">{b.phone}</p>}
-              {b.email && <p className="text-xs text-gray-400">{b.email}</p>}
+              {b.phone && <PhoneActions phone={b.phone} className="text-xs text-gray-400" phoneClassName="text-gray-400" actionClassName="text-green-600" />}
+              {(b.secondaryPhone || b.secondary_phone) && (
+                <PhoneActions
+                  phone={b.secondaryPhone || b.secondary_phone}
+                  className="text-xs text-gray-400"
+                  phoneClassName="text-gray-400"
+                  actionClassName="text-green-600"
+                />
+              )}
+              {b.mobile && <PhoneActions phone={b.mobile} className="text-xs text-gray-400" phoneClassName="text-gray-400" actionClassName="text-green-600" />}
+              {b.email && <EmailLink email={b.email} className="text-xs text-gray-400" />}
               <div className="flex gap-2 mt-4 pt-4 border-t border-border">
                 <button onClick={() => openEdit(b)} data-testid={`button-edit-branch-${b.id}`}
                   className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-primary transition-colors">
                   <Edit2 className="w-3.5 h-3.5" /> Edit
                 </button>
-                <button onClick={() => deleteMutation.mutate(b.id)} data-testid={`button-delete-branch-${b.id}`}
+                <button onClick={() => setBranchToDelete(b)} data-testid={`button-delete-branch-${b.id}`}
                   className="flex items-center gap-1.5 text-xs text-red-500 hover:text-red-700 transition-colors ml-auto">
                   <Trash2 className="w-3.5 h-3.5" /> Delete
                 </button>
@@ -113,7 +152,9 @@ export default function Branches() {
               {[
                 { label: "Branch Name", key: "name", type: "text", placeholder: "e.g. Downtown Branch" },
                 { label: "Location", key: "location", type: "text", placeholder: "e.g. 123 Main St, City" },
-                { label: "Phone", key: "phone", type: "tel", placeholder: "+1-555-0100" },
+                { label: "Phone", key: "phone", type: "tel", placeholder: "+961" },
+                { label: "Another Phone", key: "secondaryPhone", type: "tel", placeholder: "+961" },
+                { label: "Mobile", key: "mobile", type: "tel", placeholder: "+961" },
                 { label: "Email", key: "email", type: "email", placeholder: "branch@gym.com" },
               ].map(({ label, key, type, placeholder }) => (
                 <div key={key}>
@@ -140,6 +181,42 @@ export default function Branches() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {branchToDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-border p-5">
+              <h2 className="font-semibold text-gray-900">Delete Branch</h2>
+              <button onClick={() => setBranchToDelete(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5">
+              <p className="text-sm text-gray-600">
+                Are you sure you want to delete <span className="font-semibold text-gray-900">{branchToDelete.name}</span>?
+              </p>
+              <p className="mt-2 text-xs text-gray-400">This action cannot be undone.</p>
+              <div className="mt-5 flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setBranchToDelete(null)}
+                  className="flex-1 rounded-lg border border-gray-200 px-4 py-2.5 text-sm text-gray-700 transition-colors hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deleteMutation.mutate(branchToDelete.id)}
+                  disabled={deleteMutation.isPending}
+                  className="flex-1 rounded-lg bg-red-500 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-600 disabled:opacity-50"
+                >
+                  {deleteMutation.isPending ? "Deleting..." : "Delete Branch"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

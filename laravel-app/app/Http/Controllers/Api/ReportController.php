@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Support\PtSessionLifecycle;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -11,6 +12,8 @@ class ReportController extends Controller
 {
     public function overview(Request $request): JsonResponse
     {
+        app(PtSessionLifecycle::class)->syncAutoCompletedSessions();
+
         $actor = $request->user();
         $branchId = $actor->role === 'owner' ? null : $actor->branch_id;
         $period = $request->query('period', 'monthly');

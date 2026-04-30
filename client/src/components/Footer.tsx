@@ -1,4 +1,5 @@
 import { Link } from "wouter";
+import { EmailLink, PhoneActions } from "@/components/ContactLinks";
 
 export function Footer() {
   return (
@@ -38,8 +39,8 @@ export function Footer() {
             <h4 className="font-bold mb-4">Contact Info</h4>
             <ul className="space-y-2 text-sm text-muted-foreground">
               <li>123 Auto Drive, Car City</li>
-              <li>contact@automarket.com</li>
-              <li>+1 (555) 123-4567</li>
+              <li><EmailLink email="contact@automarket.com" /></li>
+              <li><PhoneActions phone="+1 (555) 123-4567" /></li>
             </ul>
           </div>
         </div>

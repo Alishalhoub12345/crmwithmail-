@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class GymPackage extends Model
 {
@@ -21,6 +22,7 @@ class GymPackage extends Model
         'price',
         'duration_days',
         'free_months',
+        'free_trial_days',
         'branch_id',
         'gym_access_hours',
         'coach_hours',
@@ -50,5 +52,11 @@ class GymPackage extends Model
         'selected_class_ids' => 'array',
         'selected_class_titles' => 'array',
         'selected_class_credits' => 'array',
+        'free_trial_days' => 'integer',
     ];
+
+    public function branches(): BelongsToMany
+    {
+        return $this->belongsToMany(Branch::class, 'package_branch_access', 'package_id', 'branch_id');
+    }
 }

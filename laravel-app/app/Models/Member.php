@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Member extends Model
@@ -37,6 +38,8 @@ class Member extends Model
         'height',
         'weight',
         'fitness_goal',
+        'manual_pt_credits_total',
+        'manual_pt_credits_used',
     ];
 
     protected $casts = [
@@ -47,6 +50,8 @@ class Member extends Model
         'is_frozen' => 'boolean',
         'height' => 'decimal:2',
         'weight' => 'decimal:2',
+        'manual_pt_credits_total' => 'integer',
+        'manual_pt_credits_used' => 'integer',
     ];
 
     public function user(): BelongsTo
@@ -57,5 +62,10 @@ class Member extends Model
     public function branch(): BelongsTo
     {
         return $this->belongsTo(Branch::class);
+    }
+
+    public function branches(): BelongsToMany
+    {
+        return $this->belongsToMany(Branch::class, 'member_branch_access');
     }
 }

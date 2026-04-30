@@ -3,9 +3,11 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Lead;
 use App\Models\Member;
 use App\Models\Subscription;
 use App\Models\User;
+use App\Support\PasswordSetupManager;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Http\JsonResponse;
@@ -14,6 +16,11 @@ use Illuminate\Validation\Rule;
 
 class MemberController extends Controller
 {
+    public function __construct(
+        private readonly PasswordSetupManager $passwordSetupManager,
+    ) {
+    }
+
     public function index(Request $request): JsonResponse
     {
         $actor = $request->user();
@@ -21,9 +28,12 @@ class MemberController extends Controller
             ->leftJoin('users', 'members.user_id', '=', 'users.id')
             ->leftJoin('branches', 'members.branch_id', '=', 'branches.id')
             ->leftJoin('packages', 'members.primary_package_id', '=', 'packages.id')
-            ->leftJoin('subscriptions as active_subscription', function ($join) {
-                $join->on('active_subscription.member_id', '=', 'members.id')
-                    ->where('active_subscription.status', '=', 'active');
+            ->leftJoinSub($this->latestSubscriptionIds(['active']), 'active_subscription_pick', function ($join) {
+                $join->on('active_subscription_pick.member_id', '=', 'members.id');
+            })
+            ->leftJoin('subscriptions as active_subscription', 'active_subscription.id', '=', 'active_subscription_pick.subscription_id')
+            ->leftJoinSub($this->subscriptionTotals(['active']), 'active_subscription_totals', function ($join) {
+                $join->on('active_subscription_totals.member_id', '=', 'members.id');
             })
             ->select([
                 'members.id',
@@ -52,11 +62,17 @@ class MemberController extends Controller
                 'members.height',
                 'members.weight',
                 'members.fitness_goal as fitnessGoal',
+                'members.manual_pt_credits_total as manualPtCreditsTotal',
+                'members.manual_pt_credits_used as manualPtCreditsUsed',
+                DB::raw('(members.manual_pt_credits_total - members.manual_pt_credits_used) as manualPtCreditsRemaining'),
                 DB::raw('(select count(*) from attendance where attendance.member_id = members.id) as attendanceCount'),
                 DB::raw('(select count(*) from attendance where attendance.member_id = members.id and date(attendance.checkin_time) = CURDATE()) as attendanceToday'),
                 'users.name as userName',
                 'users.email as userEmail',
                 'users.phone as userPhone',
+                'users.must_change_password as mustChangePassword',
+                DB::raw("(select GROUP_CONCAT(DISTINCT mba.branch_id order by mba.branch_id separator ',') from member_branch_access mba where mba.member_id = members.id) as branchIdsRaw"),
+                DB::raw("(select GROUP_CONCAT(DISTINCT b2.name order by b2.name separator ', ') from member_branch_access mba join branches b2 on mba.branch_id = b2.id where mba.member_id = members.id) as branchNamesRaw"),
                 'branches.name as branchName',
                 'packages.name as primaryPackageName',
                 'packages.package_type as primaryPackageType',
@@ -69,17 +85,28 @@ class MemberController extends Controller
                 'active_subscription.start_date as membershipStartDate',
                 'active_subscription.end_date as membershipEndDate',
                 'active_subscription.remaining_class_credits as remainingClassCredits',
-                'active_subscription.pt_sessions_total as ptSessionsTotal',
-                'active_subscription.pt_sessions_used as ptSessionsUsed',
-                DB::raw('(active_subscription.pt_sessions_total - active_subscription.pt_sessions_used) as ptSessionsRemaining'),
+                DB::raw('COALESCE(active_subscription_totals.pt_sessions_total, 0) as ptSessionsTotal'),
+                DB::raw('COALESCE(active_subscription_totals.pt_sessions_used, 0) as ptSessionsUsed'),
+                DB::raw('COALESCE(active_subscription_totals.pt_sessions_remaining, 0) as ptSessionsRemaining'),
             ])
             ->orderByDesc('members.id');
 
         if ($actor->role !== 'owner') {
-            $query->where('members.branch_id', $actor->branch_id);
+            $query->where(function ($branchScope) use ($actor) {
+                $branchScope->where('members.branch_id', $actor->branch_id)
+                    ->orWhereExists(function ($exists) use ($actor) {
+                        $exists->select(DB::raw(1))
+                            ->from('member_branch_access as mba')
+                            ->whereColumn('mba.member_id', 'members.id')
+                            ->where('mba.branch_id', $actor->branch_id);
+                    });
+            });
         }
 
-        return response()->json($query->get());
+        $members = $query->get()->map(fn ($member) => $this->appendBranchMetadata($member));
+        $this->appendPackageMetadata($members, ['active', 'frozen']);
+
+        return response()->json($members);
     }
 
     public function show(int $id): JsonResponse
@@ -88,9 +115,12 @@ class MemberController extends Controller
             ->leftJoin('users', 'members.user_id', '=', 'users.id')
             ->leftJoin('branches', 'members.branch_id', '=', 'branches.id')
             ->leftJoin('packages', 'members.primary_package_id', '=', 'packages.id')
-            ->leftJoin('subscriptions as active_subscription', function ($join) {
-                $join->on('active_subscription.member_id', '=', 'members.id')
-                    ->whereIn('active_subscription.status', ['active', 'frozen']);
+            ->leftJoinSub($this->latestSubscriptionIds(['active', 'frozen']), 'active_subscription_pick', function ($join) {
+                $join->on('active_subscription_pick.member_id', '=', 'members.id');
+            })
+            ->leftJoin('subscriptions as active_subscription', 'active_subscription.id', '=', 'active_subscription_pick.subscription_id')
+            ->leftJoinSub($this->subscriptionTotals(['active', 'frozen']), 'active_subscription_totals', function ($join) {
+                $join->on('active_subscription_totals.member_id', '=', 'members.id');
             })
             ->select([
                 'members.id',
@@ -119,11 +149,17 @@ class MemberController extends Controller
                 'members.height',
                 'members.weight',
                 'members.fitness_goal as fitnessGoal',
+                'members.manual_pt_credits_total as manualPtCreditsTotal',
+                'members.manual_pt_credits_used as manualPtCreditsUsed',
+                DB::raw('(members.manual_pt_credits_total - members.manual_pt_credits_used) as manualPtCreditsRemaining'),
                 DB::raw('(select count(*) from attendance where attendance.member_id = members.id) as attendanceCount'),
                 DB::raw('(select count(*) from attendance where attendance.member_id = members.id and date(attendance.checkin_time) = CURDATE()) as attendanceToday'),
                 'users.name as userName',
                 'users.email as userEmail',
                 'users.phone as userPhone',
+                'users.must_change_password as mustChangePassword',
+                DB::raw("(select GROUP_CONCAT(DISTINCT mba.branch_id order by mba.branch_id separator ',') from member_branch_access mba where mba.member_id = members.id) as branchIdsRaw"),
+                DB::raw("(select GROUP_CONCAT(DISTINCT b2.name order by b2.name separator ', ') from member_branch_access mba join branches b2 on mba.branch_id = b2.id where mba.member_id = members.id) as branchNamesRaw"),
                 'branches.name as branchName',
                 'packages.name as primaryPackageName',
                 'packages.package_type as primaryPackageType',
@@ -136,9 +172,9 @@ class MemberController extends Controller
                 'active_subscription.start_date as membershipStartDate',
                 'active_subscription.end_date as membershipEndDate',
                 'active_subscription.remaining_class_credits as remainingClassCredits',
-                'active_subscription.pt_sessions_total as ptSessionsTotal',
-                'active_subscription.pt_sessions_used as ptSessionsUsed',
-                DB::raw('(active_subscription.pt_sessions_total - active_subscription.pt_sessions_used) as ptSessionsRemaining'),
+                DB::raw('COALESCE(active_subscription_totals.pt_sessions_total, 0) as ptSessionsTotal'),
+                DB::raw('COALESCE(active_subscription_totals.pt_sessions_used, 0) as ptSessionsUsed'),
+                DB::raw('COALESCE(active_subscription_totals.pt_sessions_remaining, 0) as ptSessionsRemaining'),
             ])
             ->where('members.id', $id)
             ->first();
@@ -146,6 +182,9 @@ class MemberController extends Controller
         if (!$member) {
             return response()->json(['message' => 'Member not found'], 404);
         }
+
+        $member = $this->appendBranchMetadata($member);
+        $this->appendPackageMetadata(collect([$member]), ['active', 'frozen']);
 
         return response()->json($member);
     }
@@ -159,11 +198,12 @@ class MemberController extends Controller
             'middleName' => ['nullable', 'string', 'max:255'],
             'lastName' => ['nullable', 'string', 'max:255'],
             'phone' => ['nullable', 'string', 'max:50'],
-            'password' => ['nullable', 'string', 'min:8', 'regex:/[A-Z]/', 'regex:/\d/', 'regex:/[^A-Za-z0-9]/'],
             'serviceType' => ['nullable', Rule::in(['package', 'class', 'personal_training'])],
             'packageId' => ['nullable', 'integer', 'exists:packages,id'],
             'classId' => ['nullable', 'integer', 'exists:classes,id'],
             'branchId' => ['required', 'integer', 'exists:branches,id'],
+            'branchIds' => ['nullable', 'array'],
+            'branchIds.*' => ['integer', 'exists:branches,id'],
             'membershipNumber' => ['nullable', 'string', 'max:100'],
             'uniqueId' => ['nullable', 'string', 'max:100', 'unique:members,unique_id'],
             'gender' => ['nullable', Rule::in(['male', 'female', 'other'])],
@@ -174,7 +214,7 @@ class MemberController extends Controller
             'emergencyContactPhone' => ['nullable', 'string', 'max:100'],
             'joinDate' => ['nullable', 'date'],
             'membershipEndDate' => ['nullable', 'date'],
-            'status' => ['nullable', Rule::in(['active', 'expired', 'frozen'])],
+            'status' => ['nullable', Rule::in(['active', 'expired', 'frozen', 'inactive', 'contacted'])],
             'isFrozen' => ['nullable', 'boolean'],
             'freezeStartDate' => ['nullable', 'date'],
             'freezeEndDate' => ['nullable', 'date'],
@@ -183,17 +223,22 @@ class MemberController extends Controller
             'height' => ['nullable', 'numeric'],
             'weight' => ['nullable', 'numeric'],
             'fitnessGoal' => ['nullable', 'string'],
+            'manualPtCreditsTotal' => ['nullable', 'integer', 'min:0'],
+            'manualPtCreditsUsed' => ['nullable', 'integer', 'min:0'],
         ]);
 
-        $serviceType = $validated['serviceType'] ?? 'package';
+        $selectedBranchIds = collect($validated['branchIds'] ?? [])
+            ->push($validated['branchId'] ?? null)
+            ->filter(fn ($value) => $value !== null)
+            ->map(fn ($value) => (int) $value)
+            ->unique()
+            ->values();
 
-        if ($serviceType === 'class' && empty($validated['classId'])) {
-            return response()->json(['message' => 'Selected class is required'], 422);
+        if ($selectedBranchIds->isEmpty()) {
+            return response()->json(['message' => 'Select at least one branch'], 422);
         }
 
-        if ($serviceType !== 'class' && empty($validated['packageId'])) {
-            return response()->json(['message' => 'Selected package is required'], 422);
-        }
+        $validated['branchId'] = $selectedBranchIds->first();
 
         $package = null;
         if (!empty($validated['packageId'])) {
@@ -202,17 +247,29 @@ class MemberController extends Controller
                 return response()->json(['message' => 'Selected package is not available'], 400);
             }
 
-            if (!$package->allows_all_branches && $package->branch_id && (int) $package->branch_id !== (int) $validated['branchId']) {
-                return response()->json(['message' => 'Selected package does not belong to the chosen branch'], 400);
+            $packageBranchIds = DB::table('package_branch_access')
+                ->where('package_id', $package->id)
+                ->pluck('branch_id')
+                ->map(fn ($value) => (int) $value);
+
+            if (
+                !$package->allows_all_branches
+                && $packageBranchIds->isNotEmpty()
+                && $selectedBranchIds->intersect($packageBranchIds)->isEmpty()
+            ) {
+                return response()->json(['message' => 'Selected package does not belong to any chosen branch'], 400);
             }
         }
 
-        [$member, $user] = DB::transaction(function () use ($validated, $package) {
+        $temporaryPassword = $this->passwordSetupManager->createTemporaryPassword();
+
+        [$member, $user] = DB::transaction(function () use ($validated, $package, $selectedBranchIds, $temporaryPassword) {
             $user = User::query()->create([
                 'name' => $validated['name'],
                 'email' => $validated['email'],
                 'phone' => $validated['phone'] ?? null,
-                'password' => Hash::make($validated['password'] ?? 'Member@2024'),
+                'password' => Hash::make($temporaryPassword),
+                'must_change_password' => true,
                 'role' => 'member',
                 'branch_id' => $validated['branchId'],
                 'status' => 'active',
@@ -243,6 +300,8 @@ class MemberController extends Controller
                 'height' => $validated['height'] ?? null,
                 'weight' => $validated['weight'] ?? null,
                 'fitness_goal' => $validated['fitnessGoal'] ?? null,
+                'manual_pt_credits_total' => $validated['manualPtCreditsTotal'] ?? 0,
+                'manual_pt_credits_used' => $validated['manualPtCreditsUsed'] ?? 0,
             ]);
 
             if ($package) {
@@ -267,13 +326,18 @@ class MemberController extends Controller
                 ]);
             }
 
+            $member->branches()->sync($selectedBranchIds->all());
+
             return [$member, $user];
         });
+
+        $this->passwordSetupManager->sendFor($user);
 
         return response()->json([
             'id' => $member->id,
             'userId' => $member->user_id,
             'branchId' => $member->branch_id,
+            'branchIds' => $selectedBranchIds->all(),
             'primaryPackageId' => $member->primary_package_id,
             'firstName' => $member->first_name,
             'middleName' => $member->middle_name,
@@ -288,6 +352,8 @@ class MemberController extends Controller
             'emergencyContactPhone' => $member->emergency_contact_phone,
             'joinDate' => $member->join_date,
             'status' => $member->status,
+            'mustChangePassword' => (bool) $user->must_change_password,
+            'passwordSetupEmailSent' => true,
             'isFrozen' => $member->is_frozen,
             'freezeStartDate' => $member->freeze_start_date,
             'freezeEndDate' => $member->freeze_end_date,
@@ -296,6 +362,9 @@ class MemberController extends Controller
             'height' => $member->height,
             'weight' => $member->weight,
             'fitnessGoal' => $member->fitness_goal,
+            'manualPtCreditsTotal' => $member->manual_pt_credits_total,
+            'manualPtCreditsUsed' => $member->manual_pt_credits_used,
+            'manualPtCreditsRemaining' => max(0, (int) $member->manual_pt_credits_total - (int) $member->manual_pt_credits_used),
             'userName' => $user->name,
             'userEmail' => $user->email,
         ], 201);
@@ -310,7 +379,10 @@ class MemberController extends Controller
         }
 
         $validated = $request->validate([
+            'createFor' => ['nullable', Rule::in(['member', 'coach', 'lead', 'dietitian'])],
             'branchId' => ['sometimes', 'required', 'integer', 'exists:branches,id'],
+            'branchIds' => ['nullable', 'array'],
+            'branchIds.*' => ['integer', 'exists:branches,id'],
             'primaryPackageId' => ['nullable', 'integer', 'exists:packages,id'],
             'packageId' => ['nullable', 'integer', 'exists:packages,id'],
             'packageIds' => ['nullable', 'array'],
@@ -335,7 +407,7 @@ class MemberController extends Controller
             'emergencyContactPhone' => ['nullable', 'string', 'max:100'],
             'joinDate' => ['nullable', 'date'],
             'membershipEndDate' => ['nullable', 'date'],
-            'status' => ['nullable', Rule::in(['active', 'expired', 'frozen'])],
+            'status' => ['nullable', Rule::in(['active', 'expired', 'frozen', 'inactive', 'contacted'])],
             'isFrozen' => ['nullable', 'boolean'],
             'freezeStartDate' => ['nullable', 'date'],
             'freezeEndDate' => ['nullable', 'date'],
@@ -344,7 +416,34 @@ class MemberController extends Controller
             'height' => ['nullable', 'numeric'],
             'weight' => ['nullable', 'numeric'],
             'fitnessGoal' => ['nullable', 'string'],
+            'manualPtCreditsTotal' => ['nullable', 'integer', 'min:0'],
+            'manualPtCreditsUsed' => ['nullable', 'integer', 'min:0'],
         ]);
+
+        $profileType = $validated['createFor'] ?? 'member';
+
+        if ($profileType === 'lead') {
+            return $this->convertMemberToLead($member, $validated);
+        }
+
+        if ($profileType === 'dietitian') {
+            return $this->convertMemberToDietitian($member, $validated);
+        }
+
+        $selectedBranchIds = collect($validated['branchIds'] ?? [])
+            ->push($validated['branchId'] ?? null)
+            ->filter(fn ($value) => $value !== null)
+            ->map(fn ($value) => (int) $value)
+            ->unique()
+            ->values();
+
+        if ((array_key_exists('branchId', $validated) || array_key_exists('branchIds', $validated)) && $selectedBranchIds->isEmpty()) {
+            return response()->json(['message' => 'Select at least one branch'], 422);
+        }
+
+        if ($selectedBranchIds->isNotEmpty()) {
+            $validated['branchId'] = $selectedBranchIds->first();
+        }
 
         $selectedPackageIds = collect($validated['packageIds'] ?? [])
             ->push($validated['primaryPackageId'] ?? null)
@@ -367,6 +466,9 @@ class MemberController extends Controller
             $validated['primaryPackageId'] = null;
         }
 
+        $effectiveBranchIds = $selectedBranchIds->isNotEmpty()
+            ? $selectedBranchIds
+            : DB::table('member_branch_access')->where('member_id', $member->id)->pluck('branch_id')->map(fn ($value) => (int) $value);
         $branchId = (int) ($validated['branchId'] ?? $member->branch_id);
         $selectedPackages = $selectedPackageIds->isEmpty()
             ? collect()
@@ -378,8 +480,17 @@ class MemberController extends Controller
                 return response()->json(['message' => 'Selected package is not available'], 422);
             }
 
-            if (!$package->allows_all_branches && $package->branch_id && (int) $package->branch_id !== $branchId) {
-                return response()->json(['message' => 'Selected package does not belong to the chosen branch'], 422);
+            $packageBranchIds = DB::table('package_branch_access')
+                ->where('package_id', $packageId)
+                ->pluck('branch_id')
+                ->map(fn ($value) => (int) $value);
+
+            if (
+                !$package->allows_all_branches
+                && $packageBranchIds->isNotEmpty()
+                && $effectiveBranchIds->intersect($packageBranchIds)->isEmpty()
+            ) {
+                return response()->json(['message' => 'Selected package does not belong to any chosen branch'], 422);
             }
         }
 
@@ -407,6 +518,8 @@ class MemberController extends Controller
             'height' => 'height',
             'weight' => 'weight',
             'fitnessGoal' => 'fitness_goal',
+            'manualPtCreditsTotal' => 'manual_pt_credits_total',
+            'manualPtCreditsUsed' => 'manual_pt_credits_used',
         ];
 
         $payload = [];
@@ -422,8 +535,13 @@ class MemberController extends Controller
                 : (($validated['status'] ?? $member->status) === 'frozen' ? 'active' : ($validated['status'] ?? $member->status));
         }
 
-        DB::transaction(function () use ($member, $payload, $validated, $selectedPackageIds, $selectedClassIds, $selectedPackages) {
+        $passwordToEmail = !empty($validated['password']) ? $validated['password'] : null;
+
+        DB::transaction(function () use ($member, $payload, $validated, $selectedPackageIds, $selectedClassIds, $selectedPackages, $selectedBranchIds) {
             $member->fill($payload)->save();
+            if ($selectedBranchIds->isNotEmpty()) {
+                $member->branches()->sync($selectedBranchIds->all());
+            }
 
             $userPayload = [];
             if (array_key_exists('name', $validated)) {
@@ -450,17 +568,14 @@ class MemberController extends Controller
 
             if (!empty($validated['password'])) {
                 $userPayload['password'] = Hash::make($validated['password']);
+                $userPayload['must_change_password'] = false;
+                $userPayload['password_setup_token'] = null;
+                $userPayload['password_setup_token_expires_at'] = null;
             }
 
             if ($userPayload !== []) {
                 User::query()->where('id', $member->user_id)->update($userPayload);
             }
-
-            $subscription = Subscription::query()
-                ->where('member_id', $member->id)
-                ->whereIn('status', ['active', 'frozen'])
-                ->latest('id')
-                ->first();
 
             $primaryPackage = $validated['primaryPackageId'] ?? null;
             $startDate = $validated['joinDate'] ?? $member->join_date ?? now()->toDateString();
@@ -468,6 +583,35 @@ class MemberController extends Controller
             $freezeEndDate = $validated['freezeEndDate'] ?? $member->freeze_end_date;
             $isFrozen = (bool) ($validated['isFrozen'] ?? $member->is_frozen);
             $memberStatus = $payload['status'] ?? $member->status;
+
+            if ($selectedPackageIds->isNotEmpty()) {
+                Subscription::query()
+                    ->where('member_id', $member->id)
+                    ->whereIn('status', ['active', 'frozen'])
+                    ->whereNotIn('package_id', $selectedPackageIds->all())
+                    ->update([
+                        'status' => 'canceled',
+                        'is_frozen' => false,
+                    ]);
+            } elseif (array_key_exists('primaryPackageId', $validated) || array_key_exists('packageId', $validated) || array_key_exists('packageIds', $validated)) {
+                Subscription::query()
+                    ->where('member_id', $member->id)
+                    ->whereIn('status', ['active', 'frozen'])
+                    ->update([
+                        'status' => 'canceled',
+                        'is_frozen' => false,
+                    ]);
+            }
+
+            $subscription = null;
+            if ($primaryPackage !== null) {
+                $subscription = Subscription::query()
+                    ->where('member_id', $member->id)
+                    ->where('package_id', $primaryPackage)
+                    ->whereIn('status', ['active', 'frozen'])
+                    ->latest('id')
+                    ->first();
+            }
 
             if ($subscription && $primaryPackage !== null) {
                 $subscriptionPayload = [];
@@ -594,6 +738,13 @@ class MemberController extends Controller
             }
         });
 
+        if ($passwordToEmail !== null) {
+            $user = User::query()->find($member->user_id);
+            if ($user) {
+                $this->passwordSetupManager->sendTemporaryPassword($user, $passwordToEmail);
+            }
+        }
+
         return response()->json($member->fresh());
     }
 
@@ -610,9 +761,54 @@ class MemberController extends Controller
         return response()->json([], 204);
     }
 
+    public function sendPasswordSetup(int $id): JsonResponse
+    {
+        $member = Member::query()->find($id);
+
+        if (!$member) {
+            return response()->json(['message' => 'Member not found'], 404);
+        }
+
+        $user = User::query()->find($member->user_id);
+
+        if (!$user) {
+            return response()->json(['message' => 'Linked user not found'], 404);
+        }
+
+        $this->passwordSetupManager->sendFor($user);
+
+        return response()->json([
+            'message' => 'Password setup link sent.',
+        ]);
+    }
+
     private function memberBaseQuery()
     {
         return DB::table('members');
+    }
+
+    private function latestSubscriptionIds(array $statuses)
+    {
+        return DB::table('subscriptions')
+            ->select([
+                'member_id',
+                DB::raw('MAX(id) as subscription_id'),
+            ])
+            ->whereIn('status', $statuses)
+            ->groupBy('member_id');
+    }
+
+    private function subscriptionTotals(array $statuses)
+    {
+        return DB::table('subscriptions')
+            ->select([
+                'member_id',
+                DB::raw('COALESCE(SUM(pt_sessions_total), 0) as pt_sessions_total'),
+                DB::raw('COALESCE(SUM(pt_sessions_used), 0) as pt_sessions_used'),
+                DB::raw('COALESCE(SUM(pt_sessions_total - pt_sessions_used), 0) as pt_sessions_remaining'),
+            ])
+            ->whereIn('status', $statuses)
+            ->groupBy('member_id');
     }
 
     private function extractFirstName(string $name): string
@@ -652,5 +848,221 @@ class MemberController extends Controller
         }
 
         return 'SLR-' . str_pad((string) ($max + 1), 4, '0', STR_PAD_LEFT);
+    }
+
+    private function appendBranchMetadata(object $member): object
+    {
+        $branchIds = collect(explode(',', (string) ($member->branchIdsRaw ?? '')))
+            ->filter(fn ($value) => $value !== '')
+            ->map(fn ($value) => (int) $value)
+            ->values()
+            ->all();
+
+        $member->branchIds = $branchIds;
+        $member->branchName = $member->branchNamesRaw ?: $member->branchName;
+
+        unset($member->branchIdsRaw, $member->branchNamesRaw);
+
+        return $member;
+    }
+
+    private function appendPackageMetadata($members, array $statuses): void
+    {
+        $memberIds = $members
+            ->pluck('id')
+            ->filter(fn ($value) => $value !== null)
+            ->map(fn ($value) => (int) $value)
+            ->unique()
+            ->values();
+
+        if ($memberIds->isEmpty()) {
+            return;
+        }
+
+        $subscriptions = DB::table('subscriptions')
+            ->join('packages', 'subscriptions.package_id', '=', 'packages.id')
+            ->whereIn('subscriptions.member_id', $memberIds->all())
+            ->whereIn('subscriptions.status', $statuses)
+            ->select([
+                'subscriptions.id as subscriptionId',
+                'subscriptions.member_id as memberId',
+                'subscriptions.package_id as packageId',
+                'subscriptions.start_date as startDate',
+                'subscriptions.end_date as endDate',
+                'subscriptions.status',
+                'subscriptions.pt_sessions_total as ptSessionsTotal',
+                'subscriptions.pt_sessions_used as ptSessionsUsed',
+                DB::raw('(subscriptions.pt_sessions_total - subscriptions.pt_sessions_used) as ptSessionsRemaining'),
+                'packages.name as packageName',
+                'packages.package_type as packageType',
+            ])
+            ->orderBy('subscriptions.id')
+            ->get();
+
+        $packagesByMember = $subscriptions
+            ->groupBy(fn ($subscription) => (int) $subscription->memberId)
+            ->map(function ($memberSubscriptions) {
+                return $memberSubscriptions
+                    ->groupBy(fn ($subscription) => (int) $subscription->packageId)
+                    ->map(fn ($packageSubscriptions) => $packageSubscriptions->sortByDesc('subscriptionId')->first())
+                    ->sortBy('subscriptionId')
+                    ->values();
+            });
+
+        foreach ($members as $member) {
+            $primaryPackageId = (int) ($member->primaryPackageId ?? 0);
+            $packages = ($packagesByMember->get((int) $member->id) ?? collect())
+                ->sort(function ($left, $right) use ($primaryPackageId) {
+                    $leftPrimaryRank = (int) $left->packageId === $primaryPackageId ? 0 : 1;
+                    $rightPrimaryRank = (int) $right->packageId === $primaryPackageId ? 0 : 1;
+
+                    if ($leftPrimaryRank !== $rightPrimaryRank) {
+                        return $leftPrimaryRank <=> $rightPrimaryRank;
+                    }
+
+                    return (int) $left->subscriptionId <=> (int) $right->subscriptionId;
+                })
+                ->map(fn ($subscription) => [
+                    'id' => (int) $subscription->packageId,
+                    'subscriptionId' => (int) $subscription->subscriptionId,
+                    'name' => $subscription->packageName,
+                    'packageType' => $subscription->packageType,
+                    'startDate' => $subscription->startDate,
+                    'endDate' => $subscription->endDate,
+                    'status' => $subscription->status,
+                    'ptSessionsTotal' => (int) $subscription->ptSessionsTotal,
+                    'ptSessionsUsed' => (int) $subscription->ptSessionsUsed,
+                    'ptSessionsRemaining' => (int) $subscription->ptSessionsRemaining,
+                ])
+                ->values()
+                ->all();
+
+            $member->packages = $packages;
+            $member->packageIds = collect($packages)->pluck('id')->values()->all();
+            $member->packageNames = collect($packages)->pluck('name')->values()->all();
+        }
+    }
+
+    private function convertMemberToLead(Member $member, array $validated): JsonResponse
+    {
+        $user = User::query()->find($member->user_id);
+        $lead = DB::transaction(function () use ($member, $user, $validated) {
+            $name = $this->resolveProfileName($member, $user, $validated);
+
+            $lead = Lead::query()->create([
+                'branch_id' => $validated['branchId'] ?? $member->branch_id,
+                'name' => $name,
+                'first_name' => $validated['firstName'] ?? $member->first_name,
+                'last_name' => $validated['lastName'] ?? $member->last_name,
+                'phone' => $validated['phone'] ?? $user?->phone,
+                'email' => $validated['email'] ?? $user?->email,
+                'unique_id' => $validated['uniqueId'] ?? $member->unique_id,
+                'gender' => $validated['gender'] ?? $member->gender,
+                'birth_date' => $validated['birthDate'] ?? $member->birth_date,
+                'nationality' => $validated['nationality'] ?? $member->nationality,
+                'emergency_contact_name' => $validated['emergencyContactName'] ?? $member->emergency_contact_name,
+                'emergency_contact_phone' => $validated['emergencyContactPhone'] ?? $member->emergency_contact_phone,
+                'is_frozen' => $validated['isFrozen'] ?? $member->is_frozen,
+                'freeze_start_date' => $validated['freezeStartDate'] ?? $member->freeze_start_date,
+                'freeze_end_date' => $validated['freezeEndDate'] ?? $member->freeze_end_date,
+                'freeze_notes' => $validated['freezeNotes'] ?? $member->freeze_notes,
+                'source' => 'other',
+                'status' => $this->mapMemberStatusToLeadStatus($validated['status'] ?? $member->status),
+                'notes' => $validated['notes'] ?? $member->notes,
+            ]);
+
+            if ($user) {
+                $user->delete();
+            } else {
+                $member->delete();
+            }
+
+            return $lead;
+        });
+
+        return response()->json([
+            'convertedTo' => 'lead',
+            'id' => $lead->id,
+        ]);
+    }
+
+    private function convertMemberToDietitian(Member $member, array $validated): JsonResponse
+    {
+        $user = User::query()->find($member->user_id);
+
+        if (!$user) {
+            return response()->json(['message' => 'Linked user not found'], 404);
+        }
+
+        $uniqueId = $validated['uniqueId'] ?? $member->unique_id;
+        if ($uniqueId) {
+            $conflict = User::query()
+                ->where('unique_id', $uniqueId)
+                ->where('id', '!=', $user->id)
+                ->exists();
+
+            if ($conflict) {
+                return response()->json(['message' => 'Unique ID is already used by another user'], 422);
+            }
+        }
+
+        DB::transaction(function () use ($member, $user, $validated, $uniqueId) {
+            $userPayload = [
+                'name' => $this->resolveProfileName($member, $user, $validated),
+                'first_name' => $validated['firstName'] ?? $member->first_name,
+                'last_name' => $validated['lastName'] ?? $member->last_name,
+                'email' => $validated['email'] ?? $user->email,
+                'role' => 'dietitian',
+                'branch_id' => $validated['branchId'] ?? $member->branch_id,
+                'phone' => $validated['phone'] ?? $user->phone,
+                'unique_id' => $uniqueId,
+                'gender' => $validated['gender'] ?? $member->gender,
+                'birth_date' => $validated['birthDate'] ?? $member->birth_date,
+                'nationality' => $validated['nationality'] ?? $member->nationality,
+                'emergency_contact_name' => $validated['emergencyContactName'] ?? $member->emergency_contact_name,
+                'emergency_contact_phone' => $validated['emergencyContactPhone'] ?? $member->emergency_contact_phone,
+                'is_frozen' => $validated['isFrozen'] ?? $member->is_frozen,
+                'freeze_start_date' => $validated['freezeStartDate'] ?? $member->freeze_start_date,
+                'freeze_end_date' => $validated['freezeEndDate'] ?? $member->freeze_end_date,
+                'freeze_notes' => $validated['freezeNotes'] ?? $member->freeze_notes,
+                'status' => ($validated['status'] ?? $member->status) === 'active' ? 'active' : 'inactive',
+            ];
+
+            if (!empty($validated['password'])) {
+                $userPayload['password'] = Hash::make($validated['password']);
+            }
+
+            $user->fill($userPayload)->save();
+            $member->delete();
+        });
+
+        return response()->json([
+            'convertedTo' => 'dietitian',
+            'id' => $user->id,
+        ]);
+    }
+
+    private function resolveProfileName(Member $member, ?User $user, array $validated): string
+    {
+        if (!empty($validated['name'])) {
+            return trim((string) $validated['name']);
+        }
+
+        $fullName = trim(implode(' ', array_filter([
+            $validated['firstName'] ?? $member->first_name,
+            $validated['middleName'] ?? $member->middle_name,
+            $validated['lastName'] ?? $member->last_name,
+        ])));
+
+        return $fullName !== '' ? $fullName : ($user?->name ?? 'Converted Profile');
+    }
+
+    private function mapMemberStatusToLeadStatus(?string $status): string
+    {
+        return match ($status) {
+            'contacted' => 'contacted',
+            'inactive', 'expired', 'lost' => 'lost',
+            default => 'new',
+        };
     }
 }

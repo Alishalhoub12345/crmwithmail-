@@ -17,7 +17,9 @@ class UserController extends Controller
         /** @var User $actor */
         $actor = $request->user();
 
-        $query = User::query()->latest('created_at');
+        $query = User::query()
+            ->where('is_hidden_from_ui', false)
+            ->latest('created_at');
 
         if ($actor->role !== 'owner') {
             $query->where('branch_id', $actor->branch_id);
@@ -38,7 +40,7 @@ class UserController extends Controller
             'branchId' => ['nullable', 'integer', 'exists:branches,id'],
             'phone' => ['nullable', 'string', 'max:50'],
             'uniqueId' => ['nullable', 'string', 'max:100', 'unique:users,unique_id'],
-            'gender' => ['nullable', Rule::in(['male', 'female', 'other'])],
+            'gender' => ['nullable', Rule::in(['male', 'female'])],
             'birthDate' => ['nullable', 'date'],
             'nationality' => ['nullable', 'string', 'max:100'],
             'emergencyContactName' => ['nullable', 'string', 'max:255'],
@@ -115,7 +117,7 @@ class UserController extends Controller
             'branchId' => ['nullable', 'integer', 'exists:branches,id'],
             'phone' => ['nullable', 'string', 'max:50'],
             'uniqueId' => ['nullable', 'string', 'max:100', Rule::unique('users', 'unique_id')->ignore($user->id)],
-            'gender' => ['nullable', Rule::in(['male', 'female', 'other'])],
+            'gender' => ['nullable', Rule::in(['male', 'female'])],
             'birthDate' => ['nullable', 'date'],
             'nationality' => ['nullable', 'string', 'max:100'],
             'emergencyContactName' => ['nullable', 'string', 'max:255'],

@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\AttendanceController;
 use App\Http\Controllers\Api\ClassBookingController;
+use App\Http\Controllers\Api\ClassEnrollmentController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ContactMessageController;
 use App\Http\Controllers\Api\CoachController;
@@ -28,6 +29,9 @@ use Illuminate\Support\Facades\Route;
 
 Route::prefix('auth')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+    Route::post('/password-setup/validate', [AuthController::class, 'validatePasswordSetup']);
+    Route::post('/password-setup/complete', [AuthController::class, 'completePasswordSetup']);
     Route::middleware('jwt.auth')->get('/me', [AuthController::class, 'me']);
 });
 
@@ -46,10 +50,14 @@ Route::middleware(['jwt.auth'])->group(function () {
     Route::get('/members', [MemberController::class, 'index']);
     Route::get('/members/{id}', [MemberController::class, 'show']);
     Route::post('/members', [MemberController::class, 'store'])->middleware(RoleMiddleware::class . ':owner,admin');
+    Route::post('/members/{id}/send-password-setup', [MemberController::class, 'sendPasswordSetup'])->middleware(RoleMiddleware::class . ':owner,admin');
     Route::put('/members/{id}', [MemberController::class, 'update'])->middleware(RoleMiddleware::class . ':owner,admin');
     Route::delete('/members/{id}', [MemberController::class, 'destroy'])->middleware(RoleMiddleware::class . ':owner,admin');
 
     Route::get('/coaches', [CoachController::class, 'index']);
+    Route::get('/coaches/files', [CoachController::class, 'viewFile']);
+    Route::get('/coaches/payroll', [CoachController::class, 'payroll']);
+    Route::post('/coaches/payroll/{id}/mark-paid', [CoachController::class, 'markPayrollPaid'])->middleware(RoleMiddleware::class . ':owner,admin');
     Route::get('/coaches/{id}', [CoachController::class, 'show']);
     Route::post('/coaches', [CoachController::class, 'store'])->middleware(RoleMiddleware::class . ':owner,admin');
     Route::put('/coaches/{id}', [CoachController::class, 'update'])->middleware(RoleMiddleware::class . ':owner,admin');
@@ -70,6 +78,13 @@ Route::middleware(['jwt.auth'])->group(function () {
     Route::put('/classes/{id}', [GymClassController::class, 'update'])->middleware(RoleMiddleware::class . ':owner,admin');
     Route::delete('/classes/{id}', [GymClassController::class, 'destroy'])->middleware(RoleMiddleware::class . ':owner,admin');
 
+    Route::post('/class-enrollments/enroll', [ClassEnrollmentController::class, 'enroll'])->middleware(RoleMiddleware::class . ':member');
+    Route::get('/class-enrollments/{classId}', [ClassEnrollmentController::class, 'getEnrollments'])->middleware(RoleMiddleware::class . ':owner,admin,coach');
+    Route::post('/class-enrollments/mark-attendance', [ClassEnrollmentController::class, 'markAttendance'])->middleware(RoleMiddleware::class . ':owner,coach');
+    Route::get('/class-enrollments/member/{memberId}', [ClassEnrollmentController::class, 'getMemberEnrollments']);
+    Route::get('/class-enrollment-blocks', [ClassEnrollmentController::class, 'getBlockedMembers'])->middleware(RoleMiddleware::class . ':owner,admin');
+    Route::post('/class-enrollment-blocks/unblock', [ClassEnrollmentController::class, 'unblockMember'])->middleware(RoleMiddleware::class . ':owner,admin');
+
     Route::get('/bookings', [ClassBookingController::class, 'index']);
     Route::post('/bookings', [ClassBookingController::class, 'store']);
     Route::put('/bookings/{id}', [ClassBookingController::class, 'update']);
@@ -79,11 +94,12 @@ Route::middleware(['jwt.auth'])->group(function () {
     Route::get('/invoices', [InvoiceController::class, 'index'])->middleware(RoleMiddleware::class . ':owner,admin');
     Route::post('/invoices', [InvoiceController::class, 'store'])->middleware(RoleMiddleware::class . ':owner,admin');
     Route::get('/pt-sessions', [PtSessionController::class, 'index']);
-    Route::post('/pt-sessions', [PtSessionController::class, 'store'])->middleware(RoleMiddleware::class . ':owner,admin,coach');
-    Route::put('/pt-sessions/{id}', [PtSessionController::class, 'update'])->middleware(RoleMiddleware::class . ':owner,admin,coach');
+    Route::get('/pt-sessions/available-coaches', [PtSessionController::class, 'availableCoaches'])->middleware(RoleMiddleware::class . ':owner,admin,coach,member');
+    Route::post('/pt-sessions', [PtSessionController::class, 'store'])->middleware(RoleMiddleware::class . ':owner,admin,member');
+    Route::put('/pt-sessions/{id}', [PtSessionController::class, 'update'])->middleware(RoleMiddleware::class . ':owner,admin,coach,member');
 
-    Route::get('/attendance', [AttendanceController::class, 'index']);
-    Route::post('/attendance', [AttendanceController::class, 'store'])->middleware(RoleMiddleware::class . ':owner,admin,coach');
+    Route::get('/attendance', [AttendanceController::class, 'index'])->middleware(RoleMiddleware::class . ':owner,admin');
+    Route::post('/attendance', [AttendanceController::class, 'store'])->middleware(RoleMiddleware::class . ':owner,admin');
 
     Route::get('/products', [ProductController::class, 'index']);
     Route::post('/products', [ProductController::class, 'store'])->middleware(RoleMiddleware::class . ':owner,admin');

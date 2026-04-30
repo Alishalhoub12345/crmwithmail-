@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
+import { PhoneActions } from "@/components/ContactLinks";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { Eye, EyeOff, Loader2, MapPin, Phone } from "lucide-react";
 
 export default function Login() {
   const [, navigate] = useLocation();
-  const { user, loginMutation } = useAuth();
+  const { user, loginMutation, resetPasswordMutation } = useAuth();
   const { toast } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -22,8 +23,35 @@ export default function Login() {
       await loginMutation.mutateAsync({ email, password });
       navigate("/dashboard");
     } catch (err: any) {
-      const msg = err.message?.includes("401") ? "Invalid email or password" : (err.message || "Login failed");
+      const msg = err.message?.includes("401")
+        ? "Invalid email or password"
+        : (err.message || "Login failed");
       toast({ title: "Login failed", description: msg, variant: "destructive" });
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!email) {
+      toast({
+        title: "Email required",
+        description: "Enter your email address first.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const data = await resetPasswordMutation.mutateAsync({ email });
+      toast({
+        title: "Password reset requested",
+        description: data.message || "If the account exists, a password setup link has been sent.",
+      });
+    } catch (err: any) {
+      toast({
+        title: "Reset failed",
+        description: err.message || "Failed to send the password setup link.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -88,7 +116,7 @@ export default function Login() {
                 </div>
                 <div className="flex items-center gap-2 text-xs text-white/65">
                   <Phone className="h-4 w-4 flex-shrink-0 text-[#f4b516]" />
-                  <span>{phone}</span>
+                  <PhoneActions phone={phone} className="text-white/65" phoneClassName="text-white/65" actionClassName="text-green-400" showPhoneIcon={false} />
                 </div>
                 <div className="text-sm leading-6 text-white/65">{desc}</div>
               </div>
@@ -109,7 +137,7 @@ export default function Login() {
             </div>
 
             <h2 className="text-3xl font-bold text-[#181818]">Welcome back</h2>
-            <p className="mt-2 text-sm text-[#5a5a5a]">Sign in to manage Start Gym operations.</p>
+            <p className="mt-2 text-sm text-[#5a5a5a]">Sign in to manage Start Living Right Gym operations.</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -154,6 +182,14 @@ export default function Login() {
             >
               {loginMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
               Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleResetPassword()}
+              disabled={resetPasswordMutation.isPending}
+              className="w-full rounded-xl border border-[#d7d1c2] bg-white px-4 py-3 text-sm font-medium text-[#303030] transition-colors hover:bg-[#f7f3ea] disabled:opacity-50"
+            >
+              {resetPasswordMutation.isPending ? "Sending setup link..." : "Reset Password"}
             </button>
           </form>
         </div>

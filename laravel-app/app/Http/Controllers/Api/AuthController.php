@@ -8,10 +8,19 @@ use Firebase\JWT\JWT;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\RateLimiter;
+use App\Support\PasswordSetupManager;
 use RuntimeException;
 
 class AuthController extends Controller
 {
+    private const PASSWORD_RESET_EMAILS_PER_DAY = 3;
+
+    public function __construct(
+        private readonly PasswordSetupManager $passwordSetupManager,
+    ) {
+    }
+
     public function login(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -27,6 +36,13 @@ class AuthController extends Controller
 
         if ($user->status !== 'active') {
             return response()->json(['message' => 'Account is not active'], 403);
+        }
+
+        if ($user->must_change_password) {
+            return response()->json([
+                'message' => 'You must set a new password before logging in.',
+                'passwordSetupRequired' => true,
+            ], 403);
         }
 
         $jwtKey = $this->jwtSigningKey();
@@ -65,6 +81,107 @@ class AuthController extends Controller
             'branchId' => $user->branch_id,
             'status' => $user->status,
         ]);
+    }
+
+    public function validatePasswordSetup(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'email'],
+            'token' => ['required', 'string', 'min:20'],
+        ]);
+
+        $user = User::query()
+            ->where('email', $validated['email'])
+            ->first();
+
+        if (
+            !$user
+            || !$user->must_change_password
+            || !$user->password_setup_token
+            || !hash_equals($user->password_setup_token, hash('sha256', $validated['token']))
+            || !$user->password_setup_token_expires_at
+            || $user->password_setup_token_expires_at->isPast()
+        ) {
+            return response()->json(['message' => 'This password setup link is invalid or expired.'], 422);
+        }
+
+        return response()->json([
+            'email' => $user->email,
+            'name' => $user->name,
+        ]);
+    }
+
+    public function completePasswordSetup(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'email'],
+            'token' => ['required', 'string', 'min:20'],
+            'password' => ['required', 'string', 'min:8', 'regex:/[A-Z]/', 'regex:/\d/', 'regex:/[^A-Za-z0-9]/'],
+            'passwordConfirmation' => ['required', 'same:password'],
+        ]);
+
+        $user = User::query()
+            ->where('email', $validated['email'])
+            ->first();
+
+        if (
+            !$user
+            || !$user->must_change_password
+            || !$user->password_setup_token
+            || !hash_equals($user->password_setup_token, hash('sha256', $validated['token']))
+            || !$user->password_setup_token_expires_at
+            || $user->password_setup_token_expires_at->isPast()
+        ) {
+            return response()->json(['message' => 'This password setup link is invalid or expired.'], 422);
+        }
+
+        $user->forceFill([
+            'password' => Hash::make($validated['password']),
+            'must_change_password' => false,
+            'password_setup_token' => null,
+            'password_setup_token_expires_at' => null,
+        ])->save();
+
+        return response()->json([
+            'message' => 'Password updated successfully. You can now log in.',
+        ]);
+    }
+
+    public function resetPassword(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'email'],
+        ]);
+
+        $user = User::query()
+            ->where('email', $validated['email'])
+            ->where('role', 'member')
+            ->first();
+
+        if (!$user) {
+            return response()->json(['message' => 'If the account exists, a password setup link has been sent.']);
+        }
+
+        $rateLimitKey = $this->passwordResetRateLimitKey($user->email);
+
+        if (!RateLimiter::tooManyAttempts($rateLimitKey, self::PASSWORD_RESET_EMAILS_PER_DAY)) {
+            RateLimiter::hit($rateLimitKey, $this->secondsUntilEndOfDay());
+            $this->passwordSetupManager->sendFor($user);
+        }
+
+        return response()->json([
+            'message' => 'If the account exists, a password setup link has been sent.',
+        ]);
+    }
+
+    private function passwordResetRateLimitKey(string $email): string
+    {
+        return 'member-password-reset:' . sha1(strtolower(trim($email))) . ':' . now()->toDateString();
+    }
+
+    private function secondsUntilEndOfDay(): int
+    {
+        return max(1, (int) now()->diffInSeconds(now()->copy()->endOfDay()));
     }
 
     private function passwordMatches(string $plainPassword, ?string $storedPassword): bool
